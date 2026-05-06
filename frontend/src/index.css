@@ -1,0 +1,107 @@
+:root {
+  --bg: #211c22;
+  --panel: rgba(18, 10, 10, 0.78);
+  --text: #f5d79b;
+  --muted: #c9a97b;
+  --border: rgba(255, 255, 255, 0.08);
+  --app-background:
+    radial-gradient(circle at top left, rgba(108, 24, 24, 0.36), transparent 34%),
+    linear-gradient(100deg, #431d1d 0%, #2d1d22 52%, #1b1d25 100%);
+  --heading: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
+  --body: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+
+  font-family: var(--body);
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--text);
+  background: var(--app-background);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+* {
+  scrollbar-color: rgba(255, 220, 176, 0.28) rgba(18, 10, 10, 0.45);
+}
+
+.table-wrap:hover,
+.sidebar:hover {
+  scrollbar-color: rgba(255, 220, 176, 0.76) rgba(18, 10, 10, 0.45);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(18, 10, 10, 0.45);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 220, 176, 0.28);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 220, 176, 0.68);
+}
+
+html {
+  min-height: 100%;
+  background: var(--app-background);
+  overscroll-behavior-y: none;
+}
+
+body,
+#root {
+  min-height: 100vh;
+}
+
+body {
+  margin: 0;
+  background: var(--app-background);
+  background-attachment: fixed;
+  color: var(--text);
+  overscroll-behavior-y: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+h1,
+h2,
+h3,
+strong {
+  font-family: var(--heading);
+  font-weight: 700;
+  color: #f8fbff;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: clamp(2rem, 3.4vw, 3.3rem);
+  line-height: 1.05;
+}
+
+h2 {
+  font-size: clamp(1.1rem, 1.6vw, 1.6rem);
+  line-height: 1.15;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}

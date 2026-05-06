@@ -1,0 +1,62 @@
+# macOS
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+*.local
+
+# Node / React / Vite
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+dist-ssr/
+frontend/.vite/
+frontend/.vite-temp/
+
+# .NET
+bin/
+obj/
+backend/bin/
+backend/obj/
+*.db
+*.db-shm
+*.db-wal
+backend/Data/images/
+TestResults/
+*.user
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.rsuser
+*.userosscache
+*.sln.docstates
+
+# Build / coverage
+coverage/
+*.coverage
+*.coveragexml
+
+# IDEs
+.idea/
+.vscode/*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.swp
+*.sw?
+*.bak
