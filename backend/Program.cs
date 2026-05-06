@@ -1,0 +1,93 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Mvc;
+using AssetManagement.Data;
+using AssetManagement.Services;
+using System.Threading.RateLimiting;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers()
+    .ConfigureApiBehaviorOptions(options =>
+    {
+        options.InvalidModelStateResponseFactory = context =>
+        {
+            var firstError = context.ModelState
+                .Where(kvp => kvp.Value?.Errors.Count > 0)
+                .SelectMany(kvp => kvp.Value!.Errors)
+                .Select(e => e.ErrorMessage)
+                .FirstOrDefault() ?? "Dados inválidos.";
+            return new BadRequestObjectResult(new { message = firstError });
+        };
+    });
+builder.Services.AddScoped<IAuditLogger, AuditLogger>();
+builder.Services.AddSingleton<IAuthSessionStore, InMemoryAuthSessionStore>();
+builder.Services.AddScoped<PhotoService>();
+
+var databaseDirectory = Path.Combine(builder.Environment.ContentRootPath, "Data");
+Directory.CreateDirectory(databaseDirectory);
+
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? $"Data Source={Path.Combine(databaseDirectory, "asset-management.db")}";
+
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlite(connectionString));
+
+var allowedOrigins = builder.Configuration
+    .GetSection("AllowedOrigins")
+    .Get<string[]>() ?? [];
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("frontend", policy =>
+    {
+        if (builder.Environment.IsDevelopment())
+            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+        else if (allowedOrigins.Length > 0)
+            policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
+        // Otherwise, production keeps cross-origin access blocked unless origins are configured.
+    });
+});
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("login", context => RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            QueueLimit = 0,
+        }));
+    options.RejectionStatusCode = 429;
+});
+
+var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await AssetManagement.Services.DatabaseInitializer.InitializeAsync(context);
+}
+
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    context.Response.Headers["X-Permitted-Cross-Domain-Policies"] = "none";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self';";
+    if (!app.Environment.IsDevelopment())
+        context.Response.Headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains";
+    await next();
+});
+
+if (!app.Environment.IsDevelopment())
+    app.UseHttpsRedirection();
+
+app.UseCors("frontend");
+app.UseRateLimiter();
+
+app.MapControllers();
+
+app.Run();
