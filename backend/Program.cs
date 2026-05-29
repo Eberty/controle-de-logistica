@@ -21,16 +21,40 @@ builder.Services.AddControllers()
     });
 builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddSingleton<IAuthSessionStore, InMemoryAuthSessionStore>();
+builder.Services.Configure<PhotoStorageOptions>(builder.Configuration.GetSection("Storage"));
 builder.Services.AddScoped<PhotoService>();
 
-var databaseDirectory = Path.Combine(builder.Environment.ContentRootPath, "Data");
-Directory.CreateDirectory(databaseDirectory);
-
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? $"Data Source={Path.Combine(databaseDirectory, "asset-management.db")}";
+var databaseProvider = builder.Configuration["Database:Provider"] ?? "Sqlite";
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite(connectionString));
+{
+    if (string.Equals(databaseProvider, "PostgreSQL", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(databaseProvider, "Postgres", StringComparison.OrdinalIgnoreCase))
+    {
+        var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+            ?? throw new InvalidOperationException("Configure ConnectionStrings:DefaultConnection para usar PostgreSQL.");
+        options.UseNpgsql(connectionString);
+        return;
+    }
+
+    if (!string.Equals(databaseProvider, "Sqlite", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Database:Provider deve ser Sqlite ou PostgreSQL.");
+
+    var databaseDirectory = Path.Combine(builder.Environment.ContentRootPath, "Data");
+    Directory.CreateDirectory(databaseDirectory);
+
+    var connectionStringSqlite = builder.Configuration.GetConnectionString("DefaultConnection")
+        ?? $"Data Source={Path.Combine(databaseDirectory, "asset-management.db")}";
+    options.UseSqlite(connectionStringSqlite);
+});
+
+var photoStorageProvider = builder.Configuration.GetSection("Storage").Get<PhotoStorageOptions>()?.Provider ?? "Local";
+if (string.Equals(photoStorageProvider, "S3", StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddSingleton<IPhotoStorage, S3PhotoStorage>();
+else if (string.Equals(photoStorageProvider, "Local", StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddSingleton<IPhotoStorage, LocalPhotoStorage>();
+else
+    throw new InvalidOperationException("Storage:Provider deve ser Local ou S3.");
 
 var allowedOrigins = builder.Configuration
     .GetSection("AllowedOrigins")

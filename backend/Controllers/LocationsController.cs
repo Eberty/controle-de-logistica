@@ -89,31 +89,43 @@ public class LocationsController : AuthenticatedControllerBase
         if (string.IsNullOrWhiteSpace(currentName) || string.IsNullOrWhiteSpace(newName))
             return BadRequest(new { message = "Informe a localização atual e o novo nome." });
 
-        var allLocations = await Context.LocationOptions.ToListAsync();
-        var location = FindLocation(allLocations, currentName);
-
-        if (location is null)
-            return NotFound(new { message = "Localização não encontrada." });
-
-        if (string.Equals(location.Name, newName, StringComparison.Ordinal))
-            return Ok(location.Name);
-
-        if (CatalogRules.ResolveDefaultLocation(newName) is not null)
-            return Conflict(new { message = "Essa localização já existe." });
-
-        var duplicateLocation = FindLocation(allLocations, newName, location.Id);
-
-        if (duplicateLocation is not null)
-            return Conflict(new { message = "Essa localização já existe." });
-
-        var oldName = location.Name;
-        var itemsWithLocation = await Context.Items
-            .Where(x => EF.Functions.Collate(x.Location, "NOCASE") == oldName)
-            .ToListAsync();
-
         await using var transaction = await Context.Database.BeginTransactionAsync();
         try
         {
+            await AcquireItemsWriteLockAsync();
+
+            var allLocations = await Context.LocationOptions.ToListAsync();
+            var location = FindLocation(allLocations, currentName);
+
+            if (location is null)
+            {
+                await transaction.RollbackAsync();
+                return NotFound(new { message = "Localização não encontrada." });
+            }
+
+            if (string.Equals(location.Name, newName, StringComparison.Ordinal))
+            {
+                await transaction.RollbackAsync();
+                return Ok(location.Name);
+            }
+
+            if (CatalogRules.ResolveDefaultLocation(newName) is not null)
+            {
+                await transaction.RollbackAsync();
+                return Conflict(new { message = "Essa localização já existe." });
+            }
+
+            var duplicateLocation = FindLocation(allLocations, newName, location.Id);
+
+            if (duplicateLocation is not null)
+            {
+                await transaction.RollbackAsync();
+                return Conflict(new { message = "Essa localização já existe." });
+            }
+
+            var oldName = location.Name;
+            var itemsWithLocation = await QueryItemsByLocation(oldName).ToListAsync();
+
             var now = DateTime.UtcNow;
             location.Name = newName;
             foreach (var item in itemsWithLocation)
@@ -131,14 +143,13 @@ public class LocationsController : AuthenticatedControllerBase
                 location.Name,
                 $"Localização editada: {oldName} -> {location.Name}.");
             await transaction.CommitAsync();
+            return Ok(location.Name);
         }
         catch
         {
             await transaction.RollbackAsync();
             throw;
         }
-
-        return Ok(location.Name);
     }
 
     [HttpDelete]
@@ -151,22 +162,30 @@ public class LocationsController : AuthenticatedControllerBase
         if (string.IsNullOrWhiteSpace(name))
             return BadRequest(new { message = "Informe a localização." });
 
+        await using var transaction = await Context.Database.BeginTransactionAsync();
+
+        await AcquireItemsWriteLockAsync();
+
         var allLocations = await Context.LocationOptions.ToListAsync();
         var location = FindLocation(allLocations, name);
 
         if (location is null)
+        {
+            await transaction.RollbackAsync();
             return NotFound(new { message = "Localização não encontrada." });
+        }
 
-        var locationInUse = await Context.Items.AsNoTracking()
-            .AnyAsync(x => EF.Functions.Collate(x.Location, "NOCASE") == location.Name);
+        var locationInUse = await QueryItemsByLocation(location.Name).AsNoTracking().AnyAsync();
 
         if (locationInUse)
+        {
+            await transaction.RollbackAsync();
             return Conflict(new { message = "Localização em uso. Não pode ser removida." });
+        }
 
         var locationId = location.Id.ToString();
         var locationName = location.Name;
 
-        await using var transaction = await Context.Database.BeginTransactionAsync();
         Context.LocationOptions.Remove(location);
         await Context.SaveChangesAsync();
         await _auditLogger.LogAsync(

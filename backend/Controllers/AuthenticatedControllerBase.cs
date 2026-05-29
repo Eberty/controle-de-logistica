@@ -70,7 +70,45 @@ public abstract class AuthenticatedControllerBase : ControllerBase
     }
 
     protected Task AcquireItemsWriteLockAsync() =>
-        Context.Database.ExecuteSqlRawAsync("UPDATE AppLocks SET TouchedAt = TouchedAt WHERE Name = 'Items'");
+        Context.Database.ExecuteSqlRawAsync("""
+            UPDATE "AppLocks"
+            SET "TouchedAt" = "TouchedAt"
+            WHERE "Name" = 'Items'
+            """);
+
+    protected Task TouchItemForWriteAsync(int itemId) =>
+        Context.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE "Items"
+            SET "UpdatedAt" = "UpdatedAt"
+            WHERE "Id" = {itemId}
+            """);
+
+    protected IQueryable<User> QueryUsersByUsername(string username)
+    {
+        if (Context.Database.IsSqlite())
+            return Context.Users.Where(x => EF.Functions.Collate(x.Username, "NOCASE") == username);
+
+        var normalizedUsername = username.ToLowerInvariant();
+        return Context.Users.Where(x => x.Username.ToLower() == normalizedUsername);
+    }
+
+    protected IQueryable<LocationOption> QueryLocationOptionsByName(string name)
+    {
+        if (Context.Database.IsSqlite())
+            return Context.LocationOptions.Where(x => EF.Functions.Collate(x.Name, "NOCASE") == name);
+
+        var normalizedName = name.ToLowerInvariant();
+        return Context.LocationOptions.Where(x => x.Name.ToLower() == normalizedName);
+    }
+
+    protected IQueryable<Item> QueryItemsByLocation(string location)
+    {
+        if (Context.Database.IsSqlite())
+            return Context.Items.Where(x => EF.Functions.Collate(x.Location, "NOCASE") == location);
+
+        var normalizedLocation = location.ToLowerInvariant();
+        return Context.Items.Where(x => x.Location.ToLower() == normalizedLocation);
+    }
 
     protected async Task<string?> ResolveKnownLocationAsync(string location)
     {
@@ -78,10 +116,8 @@ public abstract class AuthenticatedControllerBase : ControllerBase
         if (defaultLocation is not null)
             return defaultLocation;
 
-        var normalizedLocation = location.Trim();
-        return await Context.LocationOptions
+        return await QueryLocationOptionsByName(location.Trim())
             .AsNoTracking()
-            .Where(x => EF.Functions.Collate(x.Name, "NOCASE") == normalizedLocation)
             .Select(x => x.Name)
             .FirstOrDefaultAsync();
     }

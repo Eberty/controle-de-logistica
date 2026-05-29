@@ -19,9 +19,13 @@ public class AppDbContext : DbContext
     {
         base.OnModelCreating(modelBuilder);
 
-        modelBuilder.Entity<User>().Property(u => u.Username).UseCollation("NOCASE");
+        if (Database.IsSqlite())
+        {
+            modelBuilder.Entity<User>().Property(u => u.Username).UseCollation("NOCASE");
+            modelBuilder.Entity<LocationOption>().Property(l => l.Name).UseCollation("NOCASE");
+        }
+
         modelBuilder.Entity<User>().HasIndex(u => u.Username).IsUnique();
-        modelBuilder.Entity<LocationOption>().Property(l => l.Name).UseCollation("NOCASE");
         modelBuilder.Entity<LocationOption>().HasIndex(l => l.Name).IsUnique();
         modelBuilder.Entity<UserNote>().HasIndex(n => n.UserId);
         modelBuilder.Entity<Movement>().HasIndex(m => m.ItemId);

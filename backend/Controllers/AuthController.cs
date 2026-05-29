@@ -336,17 +336,12 @@ public class AuthController : AuthenticatedControllerBase
         return NoContent();
     }
 
-    private Task<User?> FindUserByUsernameAsync(string username)
-    {
-        return Context.Users.FirstOrDefaultAsync(x => EF.Functions.Collate(x.Username, "NOCASE") == username);
-    }
+    private Task<User?> FindUserByUsernameAsync(string username) =>
+        QueryUsersByUsername(username).FirstOrDefaultAsync();
 
-    private Task<bool> UsernameExistsAsync(string username, int? ignoredUserId = null)
-    {
-        return Context.Users.AnyAsync(x =>
-            (!ignoredUserId.HasValue || x.Id != ignoredUserId.Value)
-            && EF.Functions.Collate(x.Username, "NOCASE") == username);
-    }
+    private Task<bool> UsernameExistsAsync(string username, int? ignoredUserId = null) =>
+        QueryUsersByUsername(username)
+            .AnyAsync(x => !ignoredUserId.HasValue || x.Id != ignoredUserId.Value);
 
     private static string NormalizeUsername(string value) => value.Trim();
 }

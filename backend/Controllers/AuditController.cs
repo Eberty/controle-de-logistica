@@ -22,13 +22,16 @@ public class AuditController : AuthenticatedControllerBase
         var (ok, _, error) = await TryGetAdminUserAsync();
         if (!ok) return error!;
 
+        var startUtc = NormalizeToUtc(start);
+        var endUtc = NormalizeToUtc(end);
+
         var query = Context.AuditLogs.AsNoTracking();
 
-        if (start.HasValue)
-            query = query.Where(x => x.Timestamp >= start.Value);
+        if (startUtc.HasValue)
+            query = query.Where(x => x.Timestamp >= startUtc.Value);
 
-        if (end.HasValue)
-            query = query.Where(x => x.Timestamp <= end.Value);
+        if (endUtc.HasValue)
+            query = query.Where(x => x.Timestamp <= endUtc.Value);
 
         query = query.OrderByDescending(x => x.Timestamp);
 
@@ -39,5 +42,18 @@ public class AuditController : AuthenticatedControllerBase
         var logs = await query.ToListAsync();
 
         return Ok(logs);
+    }
+
+    private static DateTime? NormalizeToUtc(DateTime? value)
+    {
+        if (!value.HasValue)
+            return null;
+
+        return value.Value.Kind switch
+        {
+            DateTimeKind.Utc => value.Value,
+            DateTimeKind.Local => value.Value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)
+        };
     }
 }

@@ -69,11 +69,11 @@ public class ItemsController : AuthenticatedControllerBase
         if (item is null || string.IsNullOrWhiteSpace(item.PhotoFileName))
             return NotFound();
 
-        var photoPath = _photos.GetPhotoPath(item.PhotoFileName);
-        if (!System.IO.File.Exists(photoPath))
+        var photo = await _photos.OpenPhotoAsync(item.PhotoFileName, item.PhotoContentType);
+        if (photo is null)
             return NotFound();
 
-        return PhysicalFile(photoPath, item.PhotoContentType);
+        return File(photo.Stream, photo.ContentType);
     }
 
     [HttpGet("{id:int}/movements")]
@@ -161,7 +161,22 @@ public class ItemsController : AuthenticatedControllerBase
             UpdatedAt = now
         };
 
+        UploadedPhoto? uploadedPhoto;
+        try
+        {
+            uploadedPhoto = await _photos.UploadPhotoAsync(request);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch
+        {
+            return StatusCode(500, new { message = "Ocorreu um erro inesperado ao salvar o item. Tente novamente." });
+        }
+
         var createdPhotoFiles = new List<string>();
+        TrackPhotoFile(uploadedPhoto?.FileName, createdPhotoFiles);
         var filesToDeleteAfterCommit = new List<string>();
 
         await using var transaction = await Context.Database.BeginTransactionAsync();
@@ -184,7 +199,7 @@ public class ItemsController : AuthenticatedControllerBase
                 existingItem.Quantity += request.Quantity;
                 existingItem.UpdatedAt = now;
                 TrackPhotoChange(
-                    await _photos.ApplyPhotoChangeAsync(existingItem, request),
+                    _photos.ApplyPhotoChange(existingItem, request, uploadedPhoto),
                     createdPhotoFiles,
                     filesToDeleteAfterCommit);
                 await Context.SaveChangesAsync();
@@ -204,22 +219,20 @@ public class ItemsController : AuthenticatedControllerBase
                     existingItem.Name,
                     $"{string.Join(" | ", auditFields)}.");
                 await transaction.CommitAsync();
-                DeletePhotoFiles(filesToDeleteAfterCommit);
+                await DeletePhotoFilesAsync(filesToDeleteAfterCommit);
                 return Ok(existingItem);
             }
 
-            Context.Items.Add(item);
-            await Context.SaveChangesAsync();
             TrackPhotoChange(
-                await _photos.ApplyPhotoChangeAsync(item, request),
+                _photos.ApplyPhotoChange(item, request, uploadedPhoto),
                 createdPhotoFiles,
                 filesToDeleteAfterCommit);
 
             if (!string.IsNullOrWhiteSpace(item.PhotoFileName))
-            {
                 createdFields.Add("Foto: enviada");
-                await Context.SaveChangesAsync();
-            }
+
+            Context.Items.Add(item);
+            await Context.SaveChangesAsync();
 
             await _auditLogger.LogAsync(
                 currentUser,
@@ -231,18 +244,18 @@ public class ItemsController : AuthenticatedControllerBase
                     ? $"Campos cadastrados: {string.Join(" | ", createdFields)}."
                     : "Item cadastrado.");
             await transaction.CommitAsync();
-            DeletePhotoFiles(filesToDeleteAfterCommit);
+            await DeletePhotoFilesAsync(filesToDeleteAfterCommit);
         }
         catch (InvalidOperationException ex)
         {
             await transaction.RollbackAsync();
-            DeletePhotoFiles(createdPhotoFiles);
+            await DeletePhotoFilesAsync(createdPhotoFiles);
             return BadRequest(new { message = ex.Message });
         }
         catch
         {
             await transaction.RollbackAsync();
-            DeletePhotoFiles(createdPhotoFiles);
+            await DeletePhotoFilesAsync(createdPhotoFiles);
             return StatusCode(500, new { message = "Ocorreu um erro inesperado ao salvar o item. Tente novamente." });
         }
 
@@ -263,7 +276,23 @@ public class ItemsController : AuthenticatedControllerBase
         var (name, assetTag, nature, location, condition, notes, isDischarged) = normalizedItem!;
 
         var now = DateTime.UtcNow;
+
+        UploadedPhoto? uploadedPhoto;
+        try
+        {
+            uploadedPhoto = await _photos.UploadPhotoAsync(request);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch
+        {
+            return StatusCode(500, new { message = "Ocorreu um erro inesperado ao atualizar o item. Tente novamente." });
+        }
+
         var createdPhotoFiles = new List<string>();
+        TrackPhotoFile(uploadedPhoto?.FileName, createdPhotoFiles);
         var filesToDeleteAfterCommit = new List<string>();
 
         await using var transaction = await Context.Database.BeginTransactionAsync();
@@ -275,6 +304,7 @@ public class ItemsController : AuthenticatedControllerBase
             if (item is null)
             {
                 await transaction.RollbackAsync();
+                await DeletePhotoFilesAsync(createdPhotoFiles);
                 return NotFound();
             }
 
@@ -330,10 +360,10 @@ public class ItemsController : AuthenticatedControllerBase
                     : null;
                 existingItem.UpdatedAt = now;
 
-                if (!string.IsNullOrWhiteSpace(request.PhotoDataUrl) || request.RemovePhoto)
+                if (uploadedPhoto is not null || request.RemovePhoto)
                 {
                     TrackPhotoChange(
-                        await _photos.ApplyPhotoChangeAsync(existingItem, request),
+                        _photos.ApplyPhotoChange(existingItem, request, uploadedPhoto),
                         createdPhotoFiles,
                         filesToDeleteAfterCommit);
                     TrackPhotoFile(item.PhotoFileName, filesToDeleteAfterCommit);
@@ -364,13 +394,14 @@ public class ItemsController : AuthenticatedControllerBase
                     existingItem.Name,
                     $"Campos editados: {string.Join(" | ", mergeFields)}.");
                 await transaction.CommitAsync();
-                DeletePhotoFiles(filesToDeleteAfterCommit);
+                await DeletePhotoFilesAsync(filesToDeleteAfterCommit);
                 return Ok(existingItem);
             }
 
             if (changedFields.Count == 0)
             {
                 await transaction.CommitAsync();
+                await DeletePhotoFilesAsync(createdPhotoFiles);
                 return Ok(item);
             }
 
@@ -388,7 +419,7 @@ public class ItemsController : AuthenticatedControllerBase
             item.UpdatedAt = now;
 
             TrackPhotoChange(
-                await _photos.ApplyPhotoChangeAsync(item, request),
+                _photos.ApplyPhotoChange(item, request, uploadedPhoto),
                 createdPhotoFiles,
                 filesToDeleteAfterCommit);
             await Context.SaveChangesAsync();
@@ -402,19 +433,19 @@ public class ItemsController : AuthenticatedControllerBase
                     ? $"Campos editados: {string.Join(" | ", changedFields)}."
                     : "Item editado.");
             await transaction.CommitAsync();
-            DeletePhotoFiles(filesToDeleteAfterCommit);
+            await DeletePhotoFilesAsync(filesToDeleteAfterCommit);
             return Ok(item);
         }
         catch (InvalidOperationException ex)
         {
             await transaction.RollbackAsync();
-            DeletePhotoFiles(createdPhotoFiles);
+            await DeletePhotoFilesAsync(createdPhotoFiles);
             return BadRequest(new { message = ex.Message });
         }
         catch
         {
             await transaction.RollbackAsync();
-            DeletePhotoFiles(createdPhotoFiles);
+            await DeletePhotoFilesAsync(createdPhotoFiles);
             return StatusCode(500, new { message = "Ocorreu um erro inesperado ao atualizar o item. Tente novamente." });
         }
     }
@@ -447,7 +478,7 @@ public class ItemsController : AuthenticatedControllerBase
             item.Name,
             "Item removido.");
         await transaction.CommitAsync();
-        DeletePhotoFiles(new[] { item.PhotoFileName });
+        await DeletePhotoFilesAsync(new[] { item.PhotoFileName });
 
         return NoContent();
     }
@@ -461,8 +492,8 @@ public class ItemsController : AuthenticatedControllerBase
         TrackPhotoFile(change.ReplacedFileName, filesToDeleteAfterCommit);
     }
 
-    private void DeletePhotoFiles(IEnumerable<string> fileNames) =>
-        _photos.DeletePhotoFiles(fileNames);
+    private Task DeletePhotoFilesAsync(IEnumerable<string> fileNames) =>
+        _photos.DeletePhotoFilesAsync(fileNames);
 
     private async Task<(NormalizedItemRequest? Item, string? ErrorMessage)> ValidateAndNormalizeItemAsync(ItemUpsertRequest request)
     {

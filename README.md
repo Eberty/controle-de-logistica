@@ -88,8 +88,35 @@ Feche terminais antigos do projeto e rode o comando de iniciar o sistema novamen
 
 Os dados ficam salvos mesmo depois de fechar e abrir o sistema novamente.
 
-O arquivo com os dados é criado automaticamente aqui:
+No uso local, o arquivo com os dados é criado automaticamente aqui:
 
 ```text
 backend/Data/asset-management.db
+```
+
+As imagens dos itens ficam salvas localmente aqui:
+
+```text
+backend/Data/images
+```
+
+Para produção, o backend também aceita PostgreSQL externo e S3. Configure por variáveis de ambiente no servidor:
+
+```text
+Database__Provider=PostgreSQL
+ConnectionStrings__DefaultConnection=Host=SEU_HOST;Port=5432;Database=SEU_BANCO;Username=SEU_USUARIO;Password=SUA_SENHA;SSL Mode=Require;Trust Server Certificate=true
+
+Storage__Provider=S3
+Storage__S3__Bucket=SEU_BUCKET
+Storage__S3__Region=us-east-1
+Storage__S3__AccessKey=SUA_ACCESS_KEY
+Storage__S3__SecretKey=SUA_SECRET_KEY
+Storage__S3__KeyPrefix=items
+```
+
+Se usar um serviço compatível com S3 que não seja AWS, configure também:
+
+```text
+Storage__S3__ServiceUrl=https://endpoint-do-servico
+Storage__S3__ForcePathStyle=true
 ```

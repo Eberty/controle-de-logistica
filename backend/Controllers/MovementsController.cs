@@ -43,9 +43,8 @@ public class MovementsController : AuthenticatedControllerBase
         {
             await AcquireItemsWriteLockAsync();
 
-            // Force a short SQLite write lock before reading the stock row so concurrent transfers are serialized.
-            await Context.Database.ExecuteSqlAsync(
-                $"UPDATE Items SET UpdatedAt = UpdatedAt WHERE Id = {request.ItemId}");
+            // Force a short write lock before reading the stock row so concurrent transfers are serialized.
+            await TouchItemForWriteAsync(request.ItemId);
 
             var item = await Context.Items.FirstOrDefaultAsync(x => x.Id == request.ItemId);
             if (item is null)
@@ -324,13 +323,13 @@ public class MovementsController : AuthenticatedControllerBase
                 $"{string.Join(". ", auditDetails)}.");
 
             await transaction.CommitAsync();
-            _photos.DeletePhotoFiles(filesToDeleteAfterCommit);
+            await _photos.DeletePhotoFilesAsync(filesToDeleteAfterCommit);
             return Ok(movement);
         }
         catch
         {
             await transaction.RollbackAsync();
-            _photos.DeletePhotoFiles(createdPhotoFiles);
+            await _photos.DeletePhotoFilesAsync(createdPhotoFiles);
             return StatusCode(500, new { message = "Ocorreu um erro inesperado ao registrar a movimentação. Tente novamente." });
         }
     }

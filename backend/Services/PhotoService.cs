@@ -1,62 +1,35 @@
 using AssetManagement.Models;
-using Microsoft.AspNetCore.Hosting;
 
 namespace AssetManagement.Services;
 
 public sealed record PhotoChangeResult(string CreatedFileName = "", string ReplacedFileName = "");
 
+public sealed record UploadedPhoto(string FileName, string ContentType);
+
 public class PhotoService
 {
     private static readonly byte[] PngSignature = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
     private static readonly byte[] JpgSignature = { 0xFF, 0xD8, 0xFF };
-    private static readonly byte[] WebpRiffSignature = { 0x52, 0x49, 0x46, 0x46 }; // "RIFF"
-    private static readonly byte[] WebpFormatSignature = { 0x57, 0x45, 0x42, 0x50 }; // "WEBP"
+    private static readonly byte[] WebpRiffSignature = { 0x52, 0x49, 0x46, 0x46 };
+    private static readonly byte[] WebpFormatSignature = { 0x57, 0x45, 0x42, 0x50 };
 
-    private readonly IWebHostEnvironment _environment;
+    private readonly IPhotoStorage _storage;
 
-    public PhotoService(IWebHostEnvironment environment)
+    public PhotoService(IPhotoStorage storage)
     {
-        _environment = environment;
+        _storage = storage;
     }
 
-    public string GetPhotoDirectory()
+    public Task<StoredPhoto?> OpenPhotoAsync(string fileName, string contentType)
     {
-        return Path.Combine(_environment.ContentRootPath, "Data", "images");
+        return _storage.OpenReadAsync(PhotoKeys.GetSafeFileName(fileName), contentType);
     }
 
-    public string GetPhotoPath(string fileName)
-    {
-        return Path.Combine(GetPhotoDirectory(), Path.GetFileName(fileName));
-    }
-
-    private void DeletePhotoFile(string? fileName)
-    {
-        if (string.IsNullOrWhiteSpace(fileName))
-            return;
-
-        var path = GetPhotoPath(fileName);
-        if (File.Exists(path))
-            File.Delete(path);
-    }
-
-    public void DeletePhotoFiles(IEnumerable<string> fileNames)
-    {
-        foreach (var fileName in fileNames.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct())
-        {
-            try
-            {
-                DeletePhotoFile(fileName);
-            }
-            catch (IOException)
-            {
-                // Cleanup failures should not undo an already committed change.
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // Cleanup failures should not undo an already committed change.
-            }
-        }
-    }
+    public Task DeletePhotoFilesAsync(IEnumerable<string> fileNames) =>
+        _storage.DeleteManyAsync(fileNames
+            .Select(PhotoKeys.TryGetSafeFileName)
+            .OfType<string>()
+            .Distinct());
 
     public string MovePhotoReferenceOrReturnUnusedFile(Item sourceItem, Item targetItem)
     {
@@ -78,56 +51,48 @@ public class PhotoService
         if (!string.IsNullOrWhiteSpace(targetItem.PhotoFileName) || string.IsNullOrWhiteSpace(sourceItem.PhotoFileName))
             return;
 
-        var sourcePath = GetPhotoPath(sourceItem.PhotoFileName);
-        if (!File.Exists(sourcePath))
-            return;
-
-        Directory.CreateDirectory(GetPhotoDirectory());
-
-        var extension = Path.GetExtension(sourceItem.PhotoFileName);
+        var sourceFileName = PhotoKeys.GetSafeFileName(sourceItem.PhotoFileName);
+        var extension = Path.GetExtension(sourceFileName);
         var fileName = $"{Guid.NewGuid():N}{extension}";
-        var targetPath = GetPhotoPath(fileName);
-
-        await using (var sourceStream = File.OpenRead(sourcePath))
-        await using (var targetStream = File.Create(targetPath))
-        {
-            await sourceStream.CopyToAsync(targetStream);
-        }
+        var copied = await _storage.CopyAsync(sourceFileName, fileName);
+        if (!copied)
+            return;
 
         targetItem.PhotoFileName = fileName;
         targetItem.PhotoContentType = sourceItem.PhotoContentType;
     }
 
-    public async Task<PhotoChangeResult> ApplyPhotoChangeAsync(Item item, Dtos.ItemUpsertRequest request)
+    public async Task<UploadedPhoto?> UploadPhotoAsync(Dtos.ItemUpsertRequest request)
     {
-        var hasNewPhoto = !string.IsNullOrWhiteSpace(request.PhotoDataUrl);
-        var oldPhotoFileName = item.PhotoFileName;
-        (byte[] Bytes, string ContentType, string Extension)? photo = hasNewPhoto
-            ? DecodePhotoDataUrl(request.PhotoDataUrl!)
-            : null;
+        if (string.IsNullOrWhiteSpace(request.PhotoDataUrl))
+            return null;
 
-        if (request.RemovePhoto || hasNewPhoto)
+        var photo = DecodePhotoDataUrl(request.PhotoDataUrl!);
+        var fileName = $"{Guid.NewGuid():N}{photo.Extension}";
+        await _storage.SaveAsync(fileName, photo.Bytes, photo.ContentType);
+        return new UploadedPhoto(fileName, photo.ContentType);
+    }
+
+    public PhotoChangeResult ApplyPhotoChange(Item item, Dtos.ItemUpsertRequest request, UploadedPhoto? uploadedPhoto)
+    {
+        var oldPhotoFileName = item.PhotoFileName;
+
+        if (request.RemovePhoto || uploadedPhoto is not null)
         {
             item.PhotoFileName = string.Empty;
             item.PhotoContentType = string.Empty;
         }
 
-        if (!hasNewPhoto || photo is null)
+        if (uploadedPhoto is null)
         {
             return request.RemovePhoto
                 ? new PhotoChangeResult(ReplacedFileName: oldPhotoFileName)
                 : new PhotoChangeResult();
         }
 
-        var fileName = $"{item.Id}-{Guid.NewGuid():N}{photo.Value.Extension}";
-        var photoPath = GetPhotoPath(fileName);
-
-        Directory.CreateDirectory(GetPhotoDirectory());
-        await File.WriteAllBytesAsync(photoPath, photo.Value.Bytes);
-
-        item.PhotoFileName = fileName;
-        item.PhotoContentType = photo.Value.ContentType;
-        return new PhotoChangeResult(fileName, oldPhotoFileName);
+        item.PhotoFileName = uploadedPhoto.FileName;
+        item.PhotoContentType = uploadedPhoto.ContentType;
+        return new PhotoChangeResult(uploadedPhoto.FileName, oldPhotoFileName);
     }
 
     private static (byte[] Bytes, string ContentType, string Extension) DecodePhotoDataUrl(string dataUrl)
