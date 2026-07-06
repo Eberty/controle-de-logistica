@@ -23,7 +23,7 @@ public class AuditController : AuthenticatedControllerBase
         if (!ok) return error!;
 
         var startUtc = NormalizeToUtc(start);
-        var endUtc = NormalizeToUtc(end);
+        var endUtc = NormalizeEndOfDayToUtc(end);
 
         var query = Context.AuditLogs.AsNoTracking();
 
@@ -55,5 +55,16 @@ public class AuditController : AuthenticatedControllerBase
             DateTimeKind.Local => value.Value.ToUniversalTime(),
             _ => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)
         };
+    }
+
+    private static DateTime? NormalizeEndOfDayToUtc(DateTime? value)
+    {
+        var normalized = NormalizeToUtc(value);
+        if (!normalized.HasValue)
+            return null;
+
+        return normalized.Value.TimeOfDay == TimeSpan.Zero
+            ? normalized.Value.AddDays(1).AddTicks(-1)
+            : normalized.Value;
     }
 }

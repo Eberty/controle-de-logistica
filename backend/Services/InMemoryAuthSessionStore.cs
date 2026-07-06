@@ -51,11 +51,11 @@ public class InMemoryAuthSessionStore : IAuthSessionStore
         _sessions.TryRemove(token, out _);
     }
 
-    public void RemoveSessionsByUserId(int userId)
+    public void RemoveSessionsByUserId(int userId, string? exceptToken = null)
     {
         foreach (var (key, entry) in _sessions)
         {
-            if (entry.UserId == userId)
+            if (entry.UserId == userId && !string.Equals(key, exceptToken, StringComparison.Ordinal))
                 _sessions.TryRemove(key, out _);
         }
     }

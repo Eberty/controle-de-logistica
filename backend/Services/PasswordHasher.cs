@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 
 namespace AssetManagement.Services;
 
@@ -20,43 +19,32 @@ public static class PasswordHasher
 
     public static bool Verify(string value, string storedHash)
     {
-        if (storedHash.StartsWith($"{CurrentPrefix}$", StringComparison.Ordinal))
-        {
-            try
-            {
-                var parts = storedHash.Split('$');
-                if (parts.Length != 4 || !int.TryParse(parts[1], out var iterations))
-                    return false;
-
-                if (iterations <= 0 || iterations > 1_000_000)
-                    return false;
-
-                var salt = Convert.FromBase64String(parts[2]);
-                var expectedKey = Convert.FromBase64String(parts[3]);
-                if (salt.Length < SaltSize || expectedKey.Length < KeySize)
-                    return false;
-
-                var actualKey = Rfc2898DeriveBytes.Pbkdf2(value, salt, iterations, HashAlgorithmName.SHA256, expectedKey.Length);
-
-                return CryptographicOperations.FixedTimeEquals(actualKey, expectedKey);
-            }
-            catch (FormatException)
-            {
-                return false;
-            }
-            catch (CryptographicException)
-            {
-                return false;
-            }
-        }
+        if (!storedHash.StartsWith($"{CurrentPrefix}$", StringComparison.Ordinal))
+            return false;
 
         try
         {
-            var storedBytes = Convert.FromHexString(storedHash);
-            var computedBytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
-            return CryptographicOperations.FixedTimeEquals(storedBytes, computedBytes);
+            var parts = storedHash.Split('$');
+            if (parts.Length != 4 || !int.TryParse(parts[1], out var iterations))
+                return false;
+
+            if (iterations <= 0 || iterations > 1_000_000)
+                return false;
+
+            var salt = Convert.FromBase64String(parts[2]);
+            var expectedKey = Convert.FromBase64String(parts[3]);
+            if (salt.Length < SaltSize || expectedKey.Length < KeySize)
+                return false;
+
+            var actualKey = Rfc2898DeriveBytes.Pbkdf2(value, salt, iterations, HashAlgorithmName.SHA256, expectedKey.Length);
+
+            return CryptographicOperations.FixedTimeEquals(actualKey, expectedKey);
         }
         catch (FormatException)
+        {
+            return false;
+        }
+        catch (CryptographicException)
         {
             return false;
         }

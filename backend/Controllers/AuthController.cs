@@ -74,12 +74,12 @@ public class AuthController : AuthenticatedControllerBase
             MilitaryId = "Admin"
         };
 
-        Context.Users.Add(admin);
-        await Context.SaveChangesAsync();
-
-        return Created(
-            $"/api/auth/users/{admin.Id}",
-            new UserResponse(admin.Id, admin.Username, admin.FullName, admin.Role, admin.MilitaryId));
+        return await PersistNewUserAsync(
+            admin,
+            admin,
+            "Administrador inicial criado.",
+            "O administrador inicial já foi criado.",
+            () => Context.Users.AnyAsync(x => x.Role == "Admin"));
     }
 
     [HttpPost("register")]
@@ -101,16 +101,16 @@ public class AuthController : AuthenticatedControllerBase
         if (request.Password.Length < MinPasswordLength)
             return BadRequest(new { message = $"A senha deve ter pelo menos {MinPasswordLength} caracteres." });
 
-        if (await UsernameExistsAsync(username))
-            return Conflict(new { message = "Esse usuário já existe." });
-
         var adminUsername = NormalizeUsername(request.AdminUsername);
         var admin = await FindUserByUsernameAsync(adminUsername);
 
         if (admin is null
-            || !string.Equals(admin.Role, "Admin", StringComparison.OrdinalIgnoreCase)
+            || !IsAdmin(admin)
             || !PasswordHasher.Verify(request.AdminPassword, admin.PasswordHash))
             return Unauthorized(new { message = "Credenciais de administrador inválidas." });
+
+        if (await UsernameExistsAsync(username))
+            return Conflict(new { message = "Esse usuário já existe." });
 
         var user = new User
         {
@@ -121,21 +121,12 @@ public class AuthController : AuthenticatedControllerBase
             MilitaryId = militaryId
         };
 
-        await using var transaction = await Context.Database.BeginTransactionAsync();
-        Context.Users.Add(user);
-        await Context.SaveChangesAsync();
-        await _auditLogger.LogAsync(
+        return await PersistNewUserAsync(
+            user,
             admin,
-            "Criação",
-            "Usuário",
-            user.Id.ToString(),
-            user.Username,
-            request.IsAdmin ? "Administrador cadastrado." : "Usuário cadastrado.");
-        await transaction.CommitAsync();
-
-        return Created(
-            $"/api/auth/users/{user.Id}",
-            new UserResponse(user.Id, user.Username, user.FullName, user.Role, user.MilitaryId));
+            request.IsAdmin ? "Administrador cadastrado." : "Usuário cadastrado.",
+            "Esse usuário já existe.",
+            () => UsernameExistsAsync(username));
     }
 
     [HttpGet("me")]
@@ -159,7 +150,7 @@ public class AuthController : AuthenticatedControllerBase
 
         var query = Context.Users.AsNoTracking();
 
-        if (!string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase))
+        if (!IsAdmin(currentUser))
             query = query.Where(x => x.Id == currentUser.Id);
 
         var users = await query
@@ -190,16 +181,26 @@ public class AuthController : AuthenticatedControllerBase
             return BadRequest(new { message = "O administrador principal não pode ser excluído." });
 
         await using var transaction = await Context.Database.BeginTransactionAsync();
-        Context.UserNotes.RemoveRange(Context.UserNotes.Where(x => x.UserId == id));
+        var userNotes = await Context.UserNotes.Where(x => x.UserId == id).ToListAsync();
+        var removedMuralNotes = userNotes.Where(x => x.IsPublic).ToList();
+        Context.UserNotes.RemoveRange(userNotes);
         Context.Users.Remove(user);
         await Context.SaveChangesAsync();
         await _auditLogger.LogAsync(
             currentUser,
-            "Exclusão",
-            "Usuário",
+            AuditActions.Delete,
+            AuditEntityTypes.User,
             id.ToString(),
             user.Username,
             "Usuário removido.");
+        if (removedMuralNotes.Count > 0)
+            await _auditLogger.LogAsync(
+                currentUser,
+                AuditActions.Remove,
+                AuditEntityTypes.Mural,
+                id.ToString(),
+                user.Username,
+                $"{removedMuralNotes.Count} anotação(ões) removida(s) do mural com a exclusão do usuário: {string.Join(" | ", removedMuralNotes.Select(x => x.Title))}.");
         await transaction.CommitAsync();
         SessionStore.RemoveSessionsByUserId(id);
 
@@ -212,7 +213,7 @@ public class AuthController : AuthenticatedControllerBase
         var (ok, currentUser, error) = await TryGetCurrentUserAsync();
         if (!ok) return error!;
 
-        var currentUserIsAdmin = string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase);
+        var currentUserIsAdmin = IsAdmin(currentUser);
 
         if (!currentUserIsAdmin && id != currentUser.Id)
             return StatusCode(403, new { message = "Sem permissão para alterar outro usuário." });
@@ -245,7 +246,7 @@ public class AuthController : AuthenticatedControllerBase
         if (!currentUserIsAdmin && request.IsAdmin)
             return BadRequest(new { message = "Usuário comum não pode definir administrador." });
 
-        var userIsAdmin = string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase);
+        var userIsAdmin = IsAdmin(user);
         var promotesToAdmin = currentUserIsAdmin && !userIsAdmin && request.IsAdmin;
 
         if (promotesToAdmin
@@ -268,7 +269,7 @@ public class AuthController : AuthenticatedControllerBase
             && !string.Equals(username, "admin", StringComparison.Ordinal))
             return BadRequest(new { message = "O nome de usuário do administrador principal não pode ser alterado." });
 
-        if (string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase) && !request.IsAdmin)
+        if (IsAdmin(user) && !request.IsAdmin)
         {
             if (string.Equals(user.Username, "admin", StringComparison.OrdinalIgnoreCase))
                 return BadRequest(new { message = "O administrador principal não pode ser rebaixado." });
@@ -315,14 +316,20 @@ public class AuthController : AuthenticatedControllerBase
         await Context.SaveChangesAsync();
         await _auditLogger.LogAsync(
             currentUser,
-            "Atualização",
-            "Usuário",
+            AuditActions.Update,
+            AuditEntityTypes.User,
             id.ToString(),
             user.Username,
             changedFields.Count > 0
                 ? $"Campos editados: {string.Join(" | ", changedFields)}."
                 : "Usuário editado.");
         await transaction.CommitAsync();
+
+        if (!string.IsNullOrWhiteSpace(request.Password))
+        {
+            TryGetBearerToken(out var currentToken);
+            SessionStore.RemoveSessionsByUserId(user.Id, id == currentUser.Id ? currentToken : null);
+        }
 
         return Ok(new UserResponse(user.Id, user.Username, user.FullName, user.Role, user.MilitaryId));
     }
@@ -334,6 +341,40 @@ public class AuthController : AuthenticatedControllerBase
             SessionStore.RemoveSession(token);
 
         return NoContent();
+    }
+
+    private async Task<IActionResult> PersistNewUserAsync(
+        User user,
+        User actor,
+        string auditDetails,
+        string conflictMessage,
+        Func<Task<bool>> conflictAlreadyExists)
+    {
+        await using var transaction = await Context.Database.BeginTransactionAsync();
+        try
+        {
+            Context.Users.Add(user);
+            await Context.SaveChangesAsync();
+            await _auditLogger.LogAsync(
+                actor,
+                AuditActions.Create,
+                AuditEntityTypes.User,
+                user.Id.ToString(),
+                user.Username,
+                auditDetails);
+            await transaction.CommitAsync();
+        }
+        catch (DbUpdateException)
+        {
+            await transaction.RollbackAsync();
+            if (await conflictAlreadyExists())
+                return Conflict(new { message = conflictMessage });
+            throw;
+        }
+
+        return Created(
+            $"/api/auth/users/{user.Id}",
+            new UserResponse(user.Id, user.Username, user.FullName, user.Role, user.MilitaryId));
     }
 
     private Task<User?> FindUserByUsernameAsync(string username) =>

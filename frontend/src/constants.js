@@ -34,6 +34,7 @@ export const emptyNoteForm = {
   title: "",
   content: "",
   tags: "",
+  isPublic: false,
 };
 
 export const emptyInventoryFilters = {
@@ -43,5 +44,17 @@ export const emptyInventoryFilters = {
   nature: "",
   location: "",
   responsible: "",
-  discharged: "",
+};
+
+export const emptyCalendarForm = {
+  dueDate: "",
+  seiNumber: "",
+  subject: "",
+  notes: "",
+};
+
+export const emptyCalendarSearch = {
+  seiNumber: "",
+  subject: "",
+  window: "",
 };

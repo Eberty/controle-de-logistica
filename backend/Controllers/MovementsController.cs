@@ -31,8 +31,9 @@ public class MovementsController : AuthenticatedControllerBase
         var (ok, currentUser, error) = await TryGetCurrentUserAsync();
         if (!ok) return error!;
 
-        if (request.Quantity <= 0)
-            return BadRequest(new { message = "A quantidade deve ser maior que zero." });
+        var quantityError = ValidateRequestedQuantity(request.Quantity);
+        if (quantityError is not null)
+            return BadRequest(new { message = quantityError });
 
         var createdPhotoFiles = new List<string>();
         var filesToDeleteAfterCommit = new List<string>();
@@ -160,120 +161,70 @@ public class MovementsController : AuthenticatedControllerBase
             var now = DateTime.UtcNow;
             var movementItemId = item.Id;
             Item? destinationItem = null;
-            if (isLocalDestination && !string.IsNullOrWhiteSpace(toLocation))
+
+            var destinationLocation = isLocalDestination ? toLocation : item.Location;
+            string? destinationResponsiblePerson = isLocalDestination ? null : destination;
+
+            var matchingDestinationItem = await FindMatchingInventoryItemAsync(new ItemMatchCriteria(
+                item.Name,
+                item.AssetTag,
+                item.Nature,
+                destinationLocation,
+                toCondition,
+                item.Notes,
+                toIsDischarged,
+                destinationResponsiblePerson,
+                item.Id));
+            if (matchingDestinationItem is not null
+                && ExceedsQuantityLimit(matchingDestinationItem.Quantity, request.Quantity))
             {
-                var matchingDestinationItem = await FindMatchingInventoryItemAsync(new ItemMatchCriteria(
-                    item.Name,
-                    item.AssetTag,
-                    item.Nature,
-                    toLocation,
-                    toCondition,
-                    item.Notes,
-                    toIsDischarged,
-                    string.Empty,
-                    item.Id));
-                if (request.Quantity == item.Quantity)
+                await transaction.RollbackAsync();
+                return BadRequest(new { message = "A quantidade total do item de destino excede o limite permitido." });
+            }
+
+            if (request.Quantity == item.Quantity)
+            {
+                if (matchingDestinationItem is not null)
                 {
-                    if (matchingDestinationItem is not null)
-                    {
-                        MergeQuantityAndPhotoIntoExistingItem(
-                            item,
-                            matchingDestinationItem,
-                            item.Quantity,
-                            toIsDischarged,
-                            now,
-                            filesToDeleteAfterCommit);
-                        destinationItem = matchingDestinationItem;
-                        await MergeItemAsync(item, matchingDestinationItem.Id);
-                        movementItemId = matchingDestinationItem.Id;
-                    }
-                    else
-                    {
-                        UpdateSourceItemDestination(item, toLocation, toCondition, null, toIsDischarged, now);
-                        destinationItem = item;
-                    }
+                    MergeQuantityAndPhotoIntoExistingItem(
+                        item,
+                        matchingDestinationItem,
+                        item.Quantity,
+                        toIsDischarged,
+                        now,
+                        filesToDeleteAfterCommit);
+                    destinationItem = matchingDestinationItem;
+                    await MergeItemAsync(item, matchingDestinationItem.Id);
+                    movementItemId = matchingDestinationItem.Id;
                 }
                 else
                 {
-                    item.Quantity -= request.Quantity;
-                    item.UpdatedAt = now;
-
-                    if (matchingDestinationItem is not null)
-                    {
-                        AddQuantityToExistingItem(matchingDestinationItem, request.Quantity, toIsDischarged, item.DischargedAt, now);
-                        await CopyPhotoIfMissingAndTrackAsync(item, matchingDestinationItem, createdPhotoFiles);
-                        destinationItem = matchingDestinationItem;
-                    }
-                    else
-                    {
-                        destinationItem = await CreateSplitDestinationItemAsync(
-                            item,
-                            request.Quantity,
-                            toLocation,
-                            toCondition,
-                            null,
-                            toIsDischarged,
-                            now,
-                            createdPhotoFiles);
-                    }
+                    UpdateSourceItemDestination(item, destinationLocation, toCondition, destinationResponsiblePerson, toIsDischarged, now);
+                    destinationItem = item;
                 }
             }
             else
             {
-                // Transfers to a person create or update a loaned inventory record.
-                var matchingLoan = await FindMatchingInventoryItemAsync(new ItemMatchCriteria(
-                    item.Name,
-                    item.AssetTag,
-                    item.Nature,
-                    item.Location,
-                    toCondition,
-                    item.Notes,
-                    toIsDischarged,
-                    destination,
-                    item.Id));
-                if (request.Quantity == item.Quantity)
+                item.Quantity -= request.Quantity;
+                item.UpdatedAt = now;
+
+                if (matchingDestinationItem is not null)
                 {
-                    if (matchingLoan is not null)
-                    {
-                        MergeQuantityAndPhotoIntoExistingItem(
-                            item,
-                            matchingLoan,
-                            item.Quantity,
-                            toIsDischarged,
-                            now,
-                            filesToDeleteAfterCommit);
-                        destinationItem = matchingLoan;
-                        await MergeItemAsync(item, matchingLoan.Id);
-                        movementItemId = matchingLoan.Id;
-                    }
-                    else
-                    {
-                        UpdateSourceItemDestination(item, item.Location, toCondition, destination, toIsDischarged, now);
-                        destinationItem = item;
-                    }
+                    AddQuantityToExistingItem(matchingDestinationItem, request.Quantity, toIsDischarged, item.DischargedAt, now);
+                    await CopyPhotoIfMissingAndTrackAsync(item, matchingDestinationItem, createdPhotoFiles);
+                    destinationItem = matchingDestinationItem;
                 }
                 else
                 {
-                    item.Quantity -= request.Quantity;
-                    item.UpdatedAt = now;
-                    if (matchingLoan is not null)
-                    {
-                        AddQuantityToExistingItem(matchingLoan, request.Quantity, toIsDischarged, item.DischargedAt, now);
-                        await CopyPhotoIfMissingAndTrackAsync(item, matchingLoan, createdPhotoFiles);
-                        destinationItem = matchingLoan;
-                    }
-                    else
-                    {
-                        destinationItem = await CreateSplitDestinationItemAsync(
-                            item,
-                            request.Quantity,
-                            item.Location,
-                            toCondition,
-                            destination,
-                            toIsDischarged,
-                            now,
-                            createdPhotoFiles);
-                    }
+                    destinationItem = await CreateSplitDestinationItemAsync(
+                        item,
+                        request.Quantity,
+                        destinationLocation,
+                        toCondition,
+                        destinationResponsiblePerson,
+                        toIsDischarged,
+                        now,
+                        createdPhotoFiles);
                 }
             }
 
@@ -316,8 +267,8 @@ public class MovementsController : AuthenticatedControllerBase
 
             await _auditLogger.LogAsync(
                 currentUser,
-                "Transferência",
-                "Movimentação",
+                AuditActions.Transfer,
+                AuditEntityTypes.Movement,
                 movement.Id.ToString(),
                 $"{movement.ItemName} - {movement.Quantity} unidades",
                 $"{string.Join(". ", auditDetails)}.");

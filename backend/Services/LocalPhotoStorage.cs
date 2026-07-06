@@ -27,8 +27,20 @@ public class LocalPhotoStorage : IPhotoStorage
         if (!File.Exists(path))
             return Task.FromResult<StoredPhoto?>(null);
 
-        return Task.FromResult<StoredPhoto?>(new StoredPhoto(File.OpenRead(path), contentType));
+        var resolvedContentType = string.IsNullOrWhiteSpace(contentType)
+            ? ResolveContentTypeFromExtension(path)
+            : contentType;
+        return Task.FromResult<StoredPhoto?>(new StoredPhoto(File.OpenRead(path), resolvedContentType));
     }
+
+    private static string ResolveContentTypeFromExtension(string path) =>
+        Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".webp" => "image/webp",
+            _ => "application/octet-stream"
+        };
 
     public async Task<bool> CopyAsync(string sourceKey, string targetKey)
     {

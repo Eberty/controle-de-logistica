@@ -34,7 +34,7 @@ public abstract class AuthenticatedControllerBase : ControllerBase
         var (ok, user, error) = await TryGetCurrentUserAsync();
         if (!ok) return (false, default!, error);
 
-        if (!string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase))
+        if (!IsAdmin(user))
             return (false, default!, StatusCode(403, new { message = "Acesso restrito a administradores." }));
 
         return (true, user, null);
@@ -55,7 +55,30 @@ public abstract class AuthenticatedControllerBase : ControllerBase
         return !string.IsNullOrWhiteSpace(token);
     }
 
+    protected const int MaxItemQuantity = 1_000_000;
+
+    protected static string? ValidateRequestedQuantity(int quantity)
+    {
+        if (quantity < 1)
+            return "A quantidade deve ser de pelo menos 1.";
+        if (quantity > MaxItemQuantity)
+            return "A quantidade deve ser de no máximo 1000000.";
+        return null;
+    }
+
+    protected static bool ExceedsQuantityLimit(int currentQuantity, int addedQuantity) =>
+        (long)currentQuantity + addedQuantity > MaxItemQuantity;
+
     protected static string FormatBoolean(bool value) => value ? "Sim" : "Não";
+
+    protected static string UserDisplayName(User user) =>
+        DisplayNameFrom(user.FullName, user.Username);
+
+    protected static string DisplayNameFrom(string? fullName, string username) =>
+        string.IsNullOrWhiteSpace(fullName) ? username : fullName;
+
+    protected static bool IsAdmin(User user) =>
+        string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase);
 
     protected static string FormatAuditValue(string value) =>
         string.IsNullOrWhiteSpace(value) ? "(vazio)" : value;
@@ -92,15 +115,6 @@ public abstract class AuthenticatedControllerBase : ControllerBase
         return Context.Users.Where(x => x.Username.ToLower() == normalizedUsername);
     }
 
-    protected IQueryable<LocationOption> QueryLocationOptionsByName(string name)
-    {
-        if (Context.Database.IsSqlite())
-            return Context.LocationOptions.Where(x => EF.Functions.Collate(x.Name, "NOCASE") == name);
-
-        var normalizedName = name.ToLowerInvariant();
-        return Context.LocationOptions.Where(x => x.Name.ToLower() == normalizedName);
-    }
-
     protected IQueryable<Item> QueryItemsByLocation(string location)
     {
         if (Context.Database.IsSqlite())
@@ -116,16 +130,17 @@ public abstract class AuthenticatedControllerBase : ControllerBase
         if (defaultLocation is not null)
             return defaultLocation;
 
-        return await QueryLocationOptionsByName(location.Trim())
-            .AsNoTracking()
-            .Select(x => x.Name)
-            .FirstOrDefaultAsync();
+        var trimmed = location.Trim();
+        var options = await Context.LocationOptions.AsNoTracking().ToListAsync();
+        return options
+            .FirstOrDefault(x => string.Equals(x.Name, trimmed, StringComparison.OrdinalIgnoreCase))
+            ?.Name;
     }
 
     protected async Task ReassignItemAuditLogsAsync(int fromItemId, int toItemId)
     {
         await Context.AuditLogs
-            .Where(x => x.EntityType == "Item" && x.EntityId == fromItemId.ToString())
+            .Where(x => x.EntityType == AuditEntityTypes.Item && x.EntityId == fromItemId.ToString())
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.EntityId, toItemId.ToString()));
     }
 
@@ -144,7 +159,9 @@ public abstract class AuthenticatedControllerBase : ControllerBase
     {
         var normalizedResponsiblePerson = NormalizeResponsiblePerson(criteria.ResponsiblePerson);
         var candidates = await Context.Items
-            .Where(x => x.AssetTag == criteria.AssetTag && x.IsDischarged == criteria.IsDischarged)
+            .Where(x => x.AssetTag == criteria.AssetTag
+                && x.IsDischarged == criteria.IsDischarged
+                && x.Notes == criteria.Notes)
             .ToListAsync();
 
         return candidates.FirstOrDefault(x =>

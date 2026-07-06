@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.HttpOverrides;
 using AssetManagement.Data;
 using AssetManagement.Services;
 using System.Threading.RateLimiting;
@@ -65,12 +66,34 @@ builder.Services.AddCors(options =>
     options.AddPolicy("frontend", policy =>
     {
         if (builder.Environment.IsDevelopment())
-            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+            policy
+                .SetIsOriginAllowed(origin =>
+                    Uri.TryCreate(origin, UriKind.Absolute, out var uri) && uri.IsLoopback)
+                .AllowAnyHeader()
+                .AllowAnyMethod();
         else if (allowedOrigins.Length > 0)
             policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
         // Otherwise, production keeps cross-origin access blocked unless origins are configured.
     });
 });
+
+var trustForwardedHeaders = builder.Configuration.GetValue<bool>("Proxy:TrustForwardedHeaders");
+var knownProxyNetworks = builder.Configuration.GetSection("Proxy:KnownNetworks").Get<string[]>() ?? [];
+var useForwardedHeaders = trustForwardedHeaders || knownProxyNetworks.Length > 0;
+if (useForwardedHeaders)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+        foreach (var network in knownProxyNetworks)
+        {
+            if (System.Net.IPNetwork.TryParse(network, out var parsedNetwork))
+                options.KnownIPNetworks.Add(parsedNetwork);
+        }
+    });
+}
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -94,6 +117,9 @@ using (var scope = app.Services.CreateScope())
     await AssetManagement.Services.DatabaseInitializer.InitializeAsync(context);
 }
 
+if (useForwardedHeaders)
+    app.UseForwardedHeaders();
+
 app.Use(async (context, next) =>
 {
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
@@ -111,6 +137,23 @@ if (!app.Environment.IsDevelopment())
 
 app.UseCors("frontend");
 app.UseRateLimiter();
+
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex) when (!context.RequestAborted.IsCancellationRequested)
+    {
+        app.Logger.LogError(ex, "Unhandled exception while processing {Method} {Path}", context.Request.Method, context.Request.Path);
+        if (!context.Response.HasStarted)
+        {
+            context.Response.StatusCode = 500;
+            await context.Response.WriteAsJsonAsync(new { message = "Ocorreu um erro inesperado. Tente novamente." });
+        }
+    }
+});
 
 app.MapControllers();
 

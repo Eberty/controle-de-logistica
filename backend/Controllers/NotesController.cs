@@ -11,9 +11,12 @@ namespace AssetManagement.Controllers;
 [Route("api/me/notes")]
 public class NotesController : AuthenticatedControllerBase
 {
-    public NotesController(AppDbContext context, IAuthSessionStore sessionStore)
+    private readonly IAuditLogger _auditLogger;
+
+    public NotesController(AppDbContext context, IAuthSessionStore sessionStore, IAuditLogger auditLogger)
         : base(context, sessionStore)
     {
+        _auditLogger = auditLogger;
     }
 
     [HttpGet]
@@ -37,10 +40,9 @@ public class NotesController : AuthenticatedControllerBase
         var (ok, currentUser, error) = await TryGetCurrentUserAsync();
         if (!ok) return error!;
 
-        var title = request.Title?.Trim() ?? string.Empty;
-        var content = request.Content?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
-            return BadRequest(new { message = "Informe título e conteúdo da anotação." });
+        var (title, content, validationError) = ValidateNoteFields(request);
+        if (validationError is not null)
+            return BadRequest(new { message = validationError });
 
         var now = DateTime.UtcNow;
         var note = new UserNote
@@ -49,12 +51,18 @@ public class NotesController : AuthenticatedControllerBase
             Title = title,
             Content = content,
             Tags = NormalizeTags(request.Tags),
+            IsPublic = request.IsPublic ?? false,
             CreatedAt = now,
             UpdatedAt = now
         };
 
+        await using var transaction = await Context.Database.BeginTransactionAsync();
         Context.UserNotes.Add(note);
         await Context.SaveChangesAsync();
+        if (note.IsPublic)
+            await LogMuralAsync(currentUser, AuditActions.Publish, note, "Anotação publicada no mural.");
+        await transaction.CommitAsync();
+
         return Created($"/api/me/notes/{note.Id}", note);
     }
 
@@ -68,17 +76,33 @@ public class NotesController : AuthenticatedControllerBase
         if (note is null)
             return NotFound(new { message = "Anotação não encontrada." });
 
-        var title = request.Title?.Trim() ?? string.Empty;
-        var content = request.Content?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
-            return BadRequest(new { message = "Informe título e conteúdo da anotação." });
+        var (title, content, validationError) = ValidateNoteFields(request);
+        if (validationError is not null)
+            return BadRequest(new { message = validationError });
+
+        var tags = NormalizeTags(request.Tags);
+        var wasPublic = note.IsPublic;
+        var contentChanged =
+            !string.Equals(note.Title, title, StringComparison.Ordinal)
+            || !string.Equals(note.Content, content, StringComparison.Ordinal)
+            || !string.Equals(note.Tags, tags, StringComparison.Ordinal);
 
         note.Title = title;
         note.Content = content;
-        note.Tags = NormalizeTags(request.Tags);
+        note.Tags = tags;
+        note.IsPublic = request.IsPublic ?? note.IsPublic;
         note.UpdatedAt = DateTime.UtcNow;
 
+        await using var transaction = await Context.Database.BeginTransactionAsync();
         await Context.SaveChangesAsync();
+        if (!wasPublic && note.IsPublic)
+            await LogMuralAsync(currentUser, AuditActions.Publish, note, "Anotação publicada no mural.");
+        else if (wasPublic && !note.IsPublic)
+            await LogMuralAsync(currentUser, AuditActions.Remove, note, "Anotação removida do mural.");
+        else if (wasPublic && note.IsPublic && contentChanged)
+            await LogMuralAsync(currentUser, AuditActions.Update, note, "Anotação do mural editada.");
+        await transaction.CommitAsync();
+
         return Ok(note);
     }
 
@@ -92,9 +116,26 @@ public class NotesController : AuthenticatedControllerBase
         if (note is null)
             return NotFound(new { message = "Anotação não encontrada." });
 
+        await using var transaction = await Context.Database.BeginTransactionAsync();
         Context.UserNotes.Remove(note);
         await Context.SaveChangesAsync();
+        if (note.IsPublic)
+            await LogMuralAsync(currentUser, AuditActions.Remove, note, "Anotação excluída e removida do mural.");
+        await transaction.CommitAsync();
+
         return NoContent();
+    }
+
+    private Task LogMuralAsync(User actor, string action, UserNote note, string details) =>
+        _auditLogger.LogAsync(actor, action, AuditEntityTypes.Mural, note.Id.ToString(), note.Title, details);
+
+    private static (string Title, string Content, string? Error) ValidateNoteFields(UserNoteRequest request)
+    {
+        var title = request.Title?.Trim() ?? string.Empty;
+        var content = request.Content?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+            return (title, content, "Informe título e conteúdo da anotação.");
+        return (title, content, null);
     }
 
     private static string NormalizeTags(string? tags)

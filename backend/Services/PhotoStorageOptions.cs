@@ -14,6 +14,6 @@ public class S3PhotoStorageOptions
     public string ServiceUrl { get; set; } = string.Empty;
     public string AccessKey { get; set; } = string.Empty;
     public string SecretKey { get; set; } = string.Empty;
-    public string KeyPrefix { get; set; } = "items";
+    public string KeyPrefix { get; set; } = string.Empty;
     public bool ForcePathStyle { get; set; }
 }

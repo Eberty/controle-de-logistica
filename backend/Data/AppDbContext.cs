@@ -11,6 +11,7 @@ public class AppDbContext : DbContext
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<UserNote> UserNotes => Set<UserNote>();
     public DbSet<LocationOption> LocationOptions => Set<LocationOption>();
+    public DbSet<CalendarEntry> CalendarEntries => Set<CalendarEntry>();
 
     public AppDbContext(DbContextOptions<AppDbContext> options)
         : base(options) { }
@@ -31,5 +32,8 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Movement>().HasIndex(m => m.ItemId);
         modelBuilder.Entity<Movement>().HasIndex(m => m.DestinationItemId);
         modelBuilder.Entity<AuditLog>().HasIndex(a => new { a.ActorUserId, a.EntityType, a.EntityId });
+        modelBuilder.Entity<AuditLog>().HasIndex(a => new { a.EntityType, a.EntityId });
+        modelBuilder.Entity<AuditLog>().HasIndex(a => a.Timestamp);
+        modelBuilder.Entity<CalendarEntry>().HasIndex(c => c.DueDate);
     }
 }

@@ -1,7 +1,7 @@
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5256";
 export const TOKEN_KEY = "ams_token";
 
-export async function request(path, { token, method = "GET", body } = {}) {
+export async function request(path, { token, method = "GET", body, raw = false } = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
@@ -10,6 +10,10 @@ export async function request(path, { token, method = "GET", body } = {}) {
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+
+  if (response.ok && raw) {
+    return response;
+  }
 
   if (response.status === 204) {
     return null;
@@ -27,8 +31,14 @@ export async function request(path, { token, method = "GET", body } = {}) {
   }
 
   if (!response.ok) {
-    const message = payload?.message || payload?.title || "Erro na requisição";
-    throw new Error(message);
+    const fallback =
+      response.status === 429
+        ? "Muitas tentativas. Aguarde e tente novamente."
+        : "Erro na requisição";
+    const message = payload?.message || payload?.title || fallback;
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
 
   return payload;
@@ -57,7 +67,7 @@ export function formatDate(value) {
   }).format(new Date(normalizeIsoDate(value)));
 }
 
-function localDateIso(date) {
+export function localDateIso(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");

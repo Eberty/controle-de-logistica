@@ -11,7 +11,7 @@ public record MovementCreateRequest(
     [StringLength(200)] string? DestinationPerson,
     [StringLength(100)] string? Condition,
     bool IsDischarged,
-    [StringLength(5000, ErrorMessage = "As observações da transferência excedem o limite de 5.000 caracteres.")] string? Notes);
+    [StringLength(5000, ErrorMessage = "As observações da transferência excedem o limite de 5000 caracteres.")] string? Notes);
 
 public record ItemHistoryEntryDto(
     string Kind,

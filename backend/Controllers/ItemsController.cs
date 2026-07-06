@@ -100,7 +100,7 @@ public class ItemsController : AuthenticatedControllerBase
             .ToListAsync();
 
         var auditEntries = await Context.AuditLogs.AsNoTracking()
-            .Where(x => x.EntityType == "Item" && x.EntityId == idStr)
+            .Where(x => x.EntityType == AuditEntityTypes.Item && x.EntityId == idStr)
             .Select(a => new ItemHistoryEntryDto(
                 "audit", a.Id, a.Timestamp, a.ActorUserName,
                 null, null, null, null, null, null, null, null, null, null, null,
@@ -138,7 +138,7 @@ public class ItemsController : AuthenticatedControllerBase
         };
 
         if (!string.IsNullOrWhiteSpace(assetTag))
-            createdFields.Add($"Número de patrimônio: {FormatAuditValue(assetTag)}");
+            createdFields.Add($"Tombo: {FormatAuditValue(assetTag)}");
 
         if (!string.IsNullOrWhiteSpace(notes))
             createdFields.Add($"Observações: {FormatAuditValue(notes)}");
@@ -194,6 +194,13 @@ public class ItemsController : AuthenticatedControllerBase
                 isDischarged));
             if (existingItem is not null)
             {
+                if (ExceedsQuantityLimit(existingItem.Quantity, request.Quantity))
+                {
+                    await transaction.RollbackAsync();
+                    await DeletePhotoFilesAsync(createdPhotoFiles);
+                    return BadRequest(new { message = "A quantidade total do item excede o limite permitido." });
+                }
+
                 var previousQuantity = existingItem.Quantity;
                 existingItem.Name = name;
                 existingItem.Quantity += request.Quantity;
@@ -213,8 +220,8 @@ public class ItemsController : AuthenticatedControllerBase
 
                 await _auditLogger.LogAsync(
                     currentUser,
-                    "Atualização",
-                    "Item",
+                    AuditActions.Update,
+                    AuditEntityTypes.Item,
                     existingItem.Id.ToString(),
                     existingItem.Name,
                     $"{string.Join(" | ", auditFields)}.");
@@ -236,8 +243,8 @@ public class ItemsController : AuthenticatedControllerBase
 
             await _auditLogger.LogAsync(
                 currentUser,
-                "Criação",
-                "Item",
+                AuditActions.Create,
+                AuditEntityTypes.Item,
                 item.Id.ToString(),
                 item.Name,
                 createdFields.Count > 0
@@ -317,7 +324,7 @@ public class ItemsController : AuthenticatedControllerBase
                 changedFields.Add($"Quantidade: {item.Quantity} -> {request.Quantity}");
 
             if (!string.Equals(item.AssetTag, assetTag, StringComparison.Ordinal))
-                changedFields.Add($"Número de patrimônio: {FormatAuditValue(item.AssetTag)} -> {FormatAuditValue(assetTag)}");
+                changedFields.Add($"Tombo: {FormatAuditValue(item.AssetTag)} -> {FormatAuditValue(assetTag)}");
 
             if (!string.Equals(item.Nature, nature, StringComparison.Ordinal))
                 changedFields.Add($"Natureza: {FormatAuditValue(item.Nature)} -> {FormatAuditValue(nature)}");
@@ -339,6 +346,13 @@ public class ItemsController : AuthenticatedControllerBase
             else if (request.RemovePhoto && !string.IsNullOrWhiteSpace(item.PhotoFileName))
                 changedFields.Add("Foto: removida");
 
+            if (changedFields.Count == 0)
+            {
+                await transaction.CommitAsync();
+                await DeletePhotoFilesAsync(createdPhotoFiles);
+                return Ok(item);
+            }
+
             var existingItem = await FindMatchingInventoryItemAsync(new ItemMatchCriteria(
                 name,
                 assetTag,
@@ -352,6 +366,13 @@ public class ItemsController : AuthenticatedControllerBase
 
             if (existingItem is not null)
             {
+                if (ExceedsQuantityLimit(existingItem.Quantity, request.Quantity))
+                {
+                    await transaction.RollbackAsync();
+                    await DeletePhotoFilesAsync(createdPhotoFiles);
+                    return BadRequest(new { message = "A quantidade total do item excede o limite permitido." });
+                }
+
                 var previousQuantity = existingItem.Quantity;
                 existingItem.Name = name;
                 existingItem.Quantity += request.Quantity;
@@ -368,14 +389,11 @@ public class ItemsController : AuthenticatedControllerBase
                         filesToDeleteAfterCommit);
                     TrackPhotoFile(item.PhotoFileName, filesToDeleteAfterCommit);
                 }
-                else if (string.IsNullOrWhiteSpace(existingItem.PhotoFileName) && !string.IsNullOrWhiteSpace(item.PhotoFileName))
-                {
-                    existingItem.PhotoFileName = item.PhotoFileName;
-                    existingItem.PhotoContentType = item.PhotoContentType;
-                }
                 else
                 {
-                    TrackPhotoFile(item.PhotoFileName, filesToDeleteAfterCommit);
+                    TrackPhotoFile(
+                        _photos.MovePhotoReferenceOrReturnUnusedFile(item, existingItem),
+                        filesToDeleteAfterCommit);
                 }
 
                 await MergeItemAsync(item, existingItem.Id);
@@ -388,21 +406,14 @@ public class ItemsController : AuthenticatedControllerBase
 
                 await _auditLogger.LogAsync(
                     currentUser,
-                    "Atualização",
-                    "Item",
+                    AuditActions.Update,
+                    AuditEntityTypes.Item,
                     existingItem.Id.ToString(),
                     existingItem.Name,
                     $"Campos editados: {string.Join(" | ", mergeFields)}.");
                 await transaction.CommitAsync();
                 await DeletePhotoFilesAsync(filesToDeleteAfterCommit);
                 return Ok(existingItem);
-            }
-
-            if (changedFields.Count == 0)
-            {
-                await transaction.CommitAsync();
-                await DeletePhotoFilesAsync(createdPhotoFiles);
-                return Ok(item);
             }
 
             item.Name = name;
@@ -425,13 +436,11 @@ public class ItemsController : AuthenticatedControllerBase
             await Context.SaveChangesAsync();
             await _auditLogger.LogAsync(
                 currentUser,
-                "Atualização",
-                "Item",
+                AuditActions.Update,
+                AuditEntityTypes.Item,
                 item.Id.ToString(),
                 item.Name,
-                changedFields.Count > 0
-                    ? $"Campos editados: {string.Join(" | ", changedFields)}."
-                    : "Item editado.");
+                $"Campos editados: {string.Join(" | ", changedFields)}.");
             await transaction.CommitAsync();
             await DeletePhotoFilesAsync(filesToDeleteAfterCommit);
             return Ok(item);
@@ -468,12 +477,25 @@ public class ItemsController : AuthenticatedControllerBase
         }
 
         var idStr = item.Id.ToString();
+
+        await Context.Movements
+            .Where(x => x.ItemId == id && x.DestinationItemId != null)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.ItemId, x => x.DestinationItemId!.Value)
+                .SetProperty(x => x.DestinationItemId, (int?)null));
+        await Context.Movements
+            .Where(x => x.DestinationItemId == id)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.DestinationItemId, (int?)null));
+        await Context.Movements
+            .Where(x => x.ItemId == id)
+            .ExecuteDeleteAsync();
+
         Context.Items.Remove(item);
         await Context.SaveChangesAsync();
         await _auditLogger.LogAsync(
             currentUser,
-            "Exclusão",
-            "Item",
+            AuditActions.Delete,
+            AuditEntityTypes.Item,
             idStr,
             item.Name,
             "Item removido.");
@@ -498,10 +520,11 @@ public class ItemsController : AuthenticatedControllerBase
     private async Task<(NormalizedItemRequest? Item, string? ErrorMessage)> ValidateAndNormalizeItemAsync(ItemUpsertRequest request)
     {
         if (!IsNumericAssetTag(request.AssetTag))
-            return (null, "O número de patrimônio deve conter apenas números.");
+            return (null, "O tombo deve conter apenas números.");
 
-        if (request.Quantity < 1)
-            return (null, "A quantidade deve ser pelo menos 1.");
+        var quantityError = ValidateRequestedQuantity(request.Quantity);
+        if (quantityError is not null)
+            return (null, quantityError);
 
         var item = NormalizeItemFields(request);
 

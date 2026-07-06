@@ -1,6 +1,6 @@
 # Controle Patrimonial e Logística
 
-Sistema web para gestão de patrimônio e logística. Ele permite controlar inventário, transferências, anotações privadas e auditoria.
+Sistema web para gestão de patrimônio e logística. Ele permite controlar inventário, transferências, anotações privadas, mural compartilhado, calendário de prazos e auditoria.
 
 ---
 
@@ -79,6 +79,8 @@ Feche terminais antigos do projeto e rode o comando de iniciar o sistema novamen
 * Controle de quantidade, tombo, natureza, localização e conservação
 * Transferência de material
 * Anotações privadas por usuário
+* Mural compartilhado de recados
+* Calendário de prazos com número do SEI e assunto
 * Histórico individual por item
 * Auditoria administrativa
 
@@ -100,9 +102,37 @@ As imagens dos itens ficam salvas localmente aqui:
 backend/Data/images
 ```
 
-Para produção, o backend também aceita PostgreSQL externo e S3. Configure por variáveis de ambiente no servidor:
+---
+
+## Deploy em produção (AWS)
+
+O sistema tem quatro partes que ficam em lugares diferentes na nuvem:
+
+| Parte | O que é | Onde fica na AWS |
+| --- | --- | --- |
+| Frontend | Site em React (arquivos estáticos) | S3 + CloudFront (HTTPS) |
+| Backend | API em .NET | Servidor de aplicação + HTTPS |
+| Banco | PostgreSQL | RDS (gerenciado) |
+| Fotos | Imagens dos itens | Bucket S3 |
+
+### Ordem sugerida dos passos
+
+1. **Criar a conta AWS** e ativar a autenticação em duas etapas (MFA) no usuário raiz.
+2. **Banco (RDS PostgreSQL):** criar uma instância pequena. Anotar host, porta, banco, usuário e senha.
+3. **Fotos (S3):** criar um bucket privado para as imagens e uma chave de acesso (IAM) com permissão só nesse bucket.
+4. **Backend:** publicar a API com as variáveis de ambiente abaixo e um endereço HTTPS.
+5. **Frontend:** gerar os arquivos com o comando da seção *Build do frontend* (abaixo) e publicá-los em outro bucket S3 servido pelo CloudFront.
+6. **Domínio e HTTPS:** apontar o domínio (Route 53 ou seu registrador) para o CloudFront (frontend) e para o backend, com certificado (ACM).
+
+### Variáveis de ambiente do backend (produção)
+
+Defina todas no servidor onde a API roda:
 
 ```text
+ASPNETCORE_ENVIRONMENT=Production
+ASPNETCORE_URLS=http://0.0.0.0:8080
+AllowedOrigins__0=https://SEU_DOMINIO_DO_FRONTEND
+
 Database__Provider=PostgreSQL
 ConnectionStrings__DefaultConnection=Host=SEU_HOST;Port=5432;Database=SEU_BANCO;Username=SEU_USUARIO;Password=SUA_SENHA;SSL Mode=Require;Trust Server Certificate=true
 
@@ -114,9 +144,30 @@ Storage__S3__SecretKey=SUA_SECRET_KEY
 Storage__S3__KeyPrefix=items
 ```
 
-Se usar um serviço compatível com S3 que não seja AWS, configure também:
+* `ASPNETCORE_URLS=http://0.0.0.0:8080` define a porta em que a API escuta. Sem isso, ela sobe só em `localhost` e o proxy/load balancer não consegue alcançá-la.
+* `AllowedOrigins__0` deve ser o endereço exato do frontend (senão o navegador bloqueia as chamadas por CORS). Para mais de um endereço, use `AllowedOrigins__1`, `AllowedOrigins__2`, etc.
+
+Se usar um serviço compatível com S3 que não seja AWS, adicione:
 
 ```text
 Storage__S3__ServiceUrl=https://endpoint-do-servico
 Storage__S3__ForcePathStyle=true
 ```
+
+Se o backend ficar atrás de um proxy reverso (nginx, load balancer da AWS), configure também para o limite de tentativas de login funcionar por IP:
+
+```text
+Proxy__TrustForwardedHeaders=true
+Proxy__KnownNetworks__0=172.31.0.0/16
+```
+
+### Build do frontend
+
+O frontend precisa saber o endereço do backend **no momento do build**:
+
+```bash
+VITE_API_BASE_URL=https://SEU_DOMINIO_DO_BACKEND
+npm --prefix frontend run build
+```
+
+Os arquivos gerados ficam em `frontend/dist` — é esse conteúdo que vai para o bucket S3 do frontend.

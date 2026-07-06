@@ -2,17 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./App.css";
 import {
-  API_BASE,
   daysAgoIso,
   formatDate,
   formatDateTime,
+  localDateIso,
   request,
   todayIso,
   TOKEN_KEY,
 } from "./api";
 import { Icon } from "./components/Icon";
 import { NumberInput } from "./components/NumberInput";
+import { TagList } from "./components/TagList";
 import {
+  emptyCalendarForm,
+  emptyCalendarSearch,
   emptyInventoryFilters,
   emptyItemForm,
   emptyNoteForm,
@@ -31,11 +34,19 @@ const INVENTORY_COLUMNS = [
   { key: "nature", label: "Natureza" },
   { key: "location", label: "Localização" },
   { key: "condition", label: "Conservação" },
-  { key: "responsible", label: "Responsável" },
+  { key: "responsible", label: "Detentor" },
   { key: "discharged", label: "Descargueado" },
   { key: "photo", label: "Foto" },
 ];
 const INVENTORY_COLUMNS_LS_KEY = "ams_inventory_columns";
+const VIEW_TITLES = {
+  items: "Cadastro de itens",
+  search: "Inventário",
+  notes: "Anotações privadas",
+  mural: "Mural",
+  calendar: "Calendário",
+  audit: "Auditoria administrativa",
+};
 const defaultInventoryColumns = INVENTORY_COLUMNS.map((c) => c.key).filter((k) => k !== "responsible");
 const usernamePattern = "[A-Za-z0-9._-]+";
 const usernamePatternTitle = "Use apenas letras, números, ponto, hífen ou underline.";
@@ -78,9 +89,18 @@ const emptyLocationForm = {
   editName: "",
   renaming: false,
   editing: false,
-  removeValue: "",
   removing: false,
 };
+
+function subtractMonths(date, months) {
+  const day = date.getDate();
+  const shifted = new Date(date);
+  shifted.setDate(1);
+  shifted.setMonth(shifted.getMonth() - months);
+  const lastDay = new Date(shifted.getFullYear(), shifted.getMonth() + 1, 0).getDate();
+  shifted.setDate(Math.min(day, lastDay));
+  return shifted;
+}
 
 function getAuditPeriodBounds(period, range) {
   if (period === "all") {
@@ -95,13 +115,13 @@ function getAuditPeriodBounds(period, range) {
   }
 
   const end = new Date();
-  const start = new Date(end);
+  let start = new Date(end);
 
   if (period === "24h") start.setDate(start.getDate() - 1);
   if (period === "7d") start.setDate(start.getDate() - 7);
-  if (period === "1m") start.setMonth(start.getMonth() - 1);
-  if (period === "6m") start.setMonth(start.getMonth() - 6);
-  if (period === "1y") start.setFullYear(start.getFullYear() - 1);
+  if (period === "1m") start = subtractMonths(end, 1);
+  if (period === "6m") start = subtractMonths(end, 6);
+  if (period === "1y") start = subtractMonths(end, 12);
 
   return {
     start: start.toISOString(),
@@ -123,8 +143,8 @@ function buildAuditTimelinePath(period, range) {
 
 function getAuditPeriodLabel(period, range) {
   if (period === "custom") {
-    const startLabel = range.startDate || "início";
-    const endLabel = range.endDate || "fim";
+    const startLabel = range.startDate ? formatIsoDateBr(range.startDate) : "início";
+    const endLabel = range.endDate ? formatIsoDateBr(range.endDate) : "fim";
     return `${startLabel} até ${endLabel}`;
   }
 
@@ -149,10 +169,9 @@ function itemMatchesInventoryFilters(item, filters) {
   const matchesCondition = !filters.condition || item.condition === filters.condition;
   const matchesNature = !filters.nature || item.nature === filters.nature;
   const matchesLocation = !filters.location || item.location === filters.location;
-  const matchesDischarged = !filters.discharged || (filters.discharged === "sim" ? item.isDischarged : !item.isDischarged);
   const matchesResponsible = !responsibleFilter || normalizeFilterText(item.responsiblePerson).includes(responsibleFilter);
 
-  return matchesName && matchesAssetTag && matchesCondition && matchesNature && matchesLocation && matchesDischarged && matchesResponsible;
+  return matchesName && matchesAssetTag && matchesCondition && matchesNature && matchesLocation && matchesResponsible;
 }
 
 function createDefaultAuditRange() {
@@ -160,6 +179,73 @@ function createDefaultAuditRange() {
     startDate: daysAgoIso(7),
     endDate: todayIso(),
   };
+}
+
+const calendarWeekDayLabels = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+const calendarMonthNames = [
+  "Janeiro",
+  "Fevereiro",
+  "Março",
+  "Abril",
+  "Maio",
+  "Junho",
+  "Julho",
+  "Agosto",
+  "Setembro",
+  "Outubro",
+  "Novembro",
+  "Dezembro",
+];
+
+function buildCalendarYearOptions(selectedYear) {
+  const currentYear = new Date().getFullYear();
+  const start = Math.min(currentYear - 5, selectedYear);
+  const end = Math.max(currentYear + 10, selectedYear);
+  const years = [];
+
+  for (let year = start; year <= end; year += 1) years.push(year);
+
+  return years;
+}
+const calendarUrgentWindowDays = 7;
+const calendarSearchWindowOptions = [
+  { value: "", label: "Qualquer prazo" },
+  { value: "7", label: "7 dias" },
+  { value: "15", label: "15 dias" },
+  { value: "31", label: "31 dias" },
+];
+
+function formatIsoDateBr(isoDate) {
+  const [year, month, day] = String(isoDate ?? "").split("-");
+  if (!year || !month || !day) return isoDate ?? "";
+  return `${day}/${month}/${year}`;
+}
+
+function daysUntilIsoDate(isoDate) {
+  const target = new Date(`${isoDate}T00:00:00`);
+  const today = new Date(`${todayIso()}T00:00:00`);
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function isUrgentIsoDate(isoDate) {
+  return daysUntilIsoDate(isoDate) < calendarUrgentWindowDays;
+}
+
+function buildCalendarDays(year, month) {
+  const firstDay = new Date(year, month, 1);
+  const gridStart = new Date(year, month, 1 - firstDay.getDay());
+  const days = [];
+
+  for (let index = 0; index < 42; index += 1) {
+    const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+    days.push({
+      iso: localDateIso(date),
+      dayNumber: date.getDate(),
+      inMonth: date.getMonth() === month,
+    });
+  }
+
+  return days;
 }
 
 function compressImage(file) {
@@ -227,6 +313,21 @@ function App() {
   const [notes, setNotes] = useState([]);
   const [noteForm, setNoteForm] = useState(emptyNoteForm);
   const [editingNoteId, setEditingNoteId] = useState(null);
+  const [noteEditReturnView, setNoteEditReturnView] = useState(null);
+  const [muralNotes, setMuralNotes] = useState([]);
+  const [calendarEntries, setCalendarEntries] = useState([]);
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  });
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => todayIso());
+  const [calendarForm, setCalendarForm] = useState(emptyCalendarForm);
+  const [editingCalendarEntryId, setEditingCalendarEntryId] = useState(null);
+  const [calendarFormOpen, setCalendarFormOpen] = useState(false);
+  const [calendarFormReturnToDay, setCalendarFormReturnToDay] = useState(false);
+  const [calendarDayModalOpen, setCalendarDayModalOpen] = useState(false);
+  const [calendarDetailEntryId, setCalendarDetailEntryId] = useState(null);
+  const [calendarSearch, setCalendarSearch] = useState(emptyCalendarSearch);
   const [inventoryFilters, setInventoryFilters] = useState(emptyInventoryFilters);
   const [inventoryPage, setInventoryPage] = useState(1);
   const [visibleColumns, setVisibleColumns] = useState(() => {
@@ -249,6 +350,9 @@ function App() {
   const [auditTimeline, setAuditTimeline] = useState([]);
   const [auditPeriod, setAuditPeriod] = useState(defaultAuditPeriod);
   const [auditCustomRange, setAuditCustomRange] = useState(createDefaultAuditRange);
+  const [loadedAuditLabel, setLoadedAuditLabel] = useState(() =>
+    getAuditPeriodLabel(defaultAuditPeriod, createDefaultAuditRange()),
+  );
   const [auditPage, setAuditPage] = useState(1);
   const [auditLoading, setAuditLoading] = useState(false);
   const [toasts, setToasts] = useState([]);
@@ -268,6 +372,9 @@ function App() {
   const adminSettingsRef = useRef(null);
   const itemPhotoObjectUrlsRef = useRef(new Map());
   const photoInputRef = useRef(null);
+  const itemHistoryRequestRef = useRef(0);
+  const auditTimelineRequestRef = useRef(0);
+  const workspaceRequestRef = useRef(0);
   const availableLocationOptions = useMemo(
     () =>
       Array.from(new Set([...locationOptions, ...customLocations]))
@@ -279,9 +386,61 @@ function App() {
     () => customLocations.slice().sort((left, right) => left.localeCompare(right, "pt-BR")),
     [customLocations]
   );
+  const calendarDays = useMemo(
+    () => buildCalendarDays(calendarMonth.year, calendarMonth.month),
+    [calendarMonth]
+  );
+  const calendarYearOptions = useMemo(
+    () => buildCalendarYearOptions(calendarMonth.year),
+    [calendarMonth.year]
+  );
+  const todayIsoDate = todayIso();
+  const calendarEntriesByDate = useMemo(() => {
+    const map = new Map();
+    calendarEntries.forEach((entry) => {
+      const list = map.get(entry.dueDate) ?? [];
+      list.push(entry);
+      map.set(entry.dueDate, list);
+    });
+    return map;
+  }, [calendarEntries]);
+  const calendarSearchActive =
+    calendarSearch.seiNumber.trim() !== "" || calendarSearch.subject.trim() !== "" || calendarSearch.window !== "";
+  const calendarSearchResults = useMemo(() => {
+    if (!calendarSearchActive) return [];
 
-  function setMessage(nextMessage) {
+    const seiFilter = normalizeFilterText(calendarSearch.seiNumber);
+    const subjectFilter = normalizeFilterText(calendarSearch.subject);
+    const windowDays = calendarSearch.window ? Number(calendarSearch.window) : null;
+
+    return calendarEntries.filter((entry) => {
+      const matchesSei = !seiFilter || normalizeFilterText(entry.seiNumber).includes(seiFilter);
+      const matchesSubject = !subjectFilter || normalizeFilterText(entry.subject).includes(subjectFilter);
+      const daysUntilDue = daysUntilIsoDate(entry.dueDate);
+      const matchesWindow = windowDays === null || (daysUntilDue >= 0 && daysUntilDue <= windowDays);
+      return matchesSei && matchesSubject && matchesWindow;
+    });
+  }, [calendarEntries, calendarSearch, calendarSearchActive]);
+  const selectedCalendarDayEntries = selectedCalendarDate
+    ? (calendarEntriesByDate.get(selectedCalendarDate) ?? [])
+    : [];
+  const calendarDetailEntry =
+    calendarDetailEntryId == null
+      ? null
+      : (calendarEntries.find((entry) => entry.id === calendarDetailEntryId) ?? null);
+
+  function setMessage(nextMessage, tone = "error") {
     if (!nextMessage) {
+      setToasts((current) => {
+        if (!current.some((toast) => toast.tone === "error")) return current;
+        current.forEach((toast) => {
+          if (toast.tone !== "error") return;
+          const timeoutId = toastTimeoutsRef.current.get(toast.id);
+          if (timeoutId) window.clearTimeout(timeoutId);
+          toastTimeoutsRef.current.delete(toast.id);
+        });
+        return current.filter((toast) => toast.tone !== "error");
+      });
       return;
     }
 
@@ -289,6 +448,7 @@ function App() {
     const toast = {
       id: toastId,
       text: String(nextMessage),
+      tone,
     };
 
     setToasts((current) => [...current, toast]);
@@ -299,6 +459,10 @@ function App() {
     }, 8000);
 
     toastTimeoutsRef.current.set(toastId, timeoutId);
+  }
+
+  function sameTextPtBr(a, b) {
+    return normalizeFilterText(a) === normalizeFilterText(b);
   }
 
   function formatMovementOrigin(movement) {
@@ -318,8 +482,7 @@ function App() {
       movement.destinationType === "Pessoa" &&
         movement.originPerson?.trim() &&
         movement.destinationPerson?.trim() &&
-        movement.originPerson.trim().toLocaleLowerCase("pt-BR") ===
-          movement.destinationPerson.trim().toLocaleLowerCase("pt-BR"),
+        sameTextPtBr(movement.originPerson, movement.destinationPerson),
     );
   }
 
@@ -332,7 +495,7 @@ function App() {
         movement.originPerson?.trim() &&
         origin &&
         destination &&
-        origin.toLocaleLowerCase("pt-BR") === destination.toLocaleLowerCase("pt-BR"),
+        sameTextPtBr(origin, destination),
     );
   }
 
@@ -348,7 +511,7 @@ function App() {
       origin !== "-" &&
       destination !== "-" &&
       (movement.destinationType !== "Pessoa"
-        ? origin.trim().toLocaleLowerCase("pt-BR") === destination.trim().toLocaleLowerCase("pt-BR")
+        ? sameTextPtBr(origin, destination)
         : isSameResponsiblePersonMovement(movement))
     ) {
       return "";
@@ -364,9 +527,9 @@ function App() {
 
     if (isReturnToLocationMovement(movement)) return "Devolução";
 
-    const origin = movement.fromLocation?.trim().toLocaleLowerCase("pt-BR") ?? "";
-    const dest = movement.toLocation?.trim().toLocaleLowerCase("pt-BR") ?? "";
-    if (origin && dest && origin !== dest) return "Transferência";
+    const origin = movement.fromLocation?.trim() ?? "";
+    const dest = movement.toLocation?.trim() ?? "";
+    if (origin && dest && !sameTextPtBr(origin, dest)) return "Transferência";
     return "Atualização";
   }
 
@@ -397,16 +560,24 @@ function App() {
     return item ? itemPhotoUrls[item.id] ?? "" : "";
   }
 
+  function resetCalendarUi() {
+    setCalendarFormOpen(false);
+    setCalendarFormReturnToDay(false);
+    setCalendarDayModalOpen(false);
+    setCalendarDetailEntryId(null);
+    setEditingCalendarEntryId(null);
+    setCalendarForm(emptyCalendarForm);
+    setCalendarSearch(emptyCalendarSearch);
+  }
+
   function navigateTo(view) {
-    setEditingItemId(null);
-    setItemEditReturnView(null);
-    setItemForm(emptyItemForm);
     setNewLocationForm(emptyLocationForm);
     setFocusedItemId(null);
     closeItemAction();
     setItemHistory([]);
     setInventoryFilters(emptyInventoryFilters);
     setInventoryPage(1);
+    resetCalendarUi();
     setActiveView(view);
     setMobileMenuOpen(false);
     setAdminSettingsOpen(false);
@@ -456,6 +627,9 @@ function App() {
         const currentUser = await request("/api/auth/me", { token });
         if (!active) return;
         setUser(currentUser);
+        if (currentUser.role !== "Admin") {
+          setActiveView("search");
+        }
 
         const [itemsResponse, noteResponse, usersResponse, locationResponse] = await Promise.all([
           request("/api/items", { token }),
@@ -471,6 +645,23 @@ function App() {
         setAdminUsers(usersResponse);
         setCustomLocations(locationResponse);
 
+        try {
+          const [muralResponse, calendarResponse] = await Promise.all([
+            request("/api/mural", { token }),
+            request("/api/calendar", { token }),
+          ]);
+
+          if (active) {
+            setMuralNotes(muralResponse);
+            setCalendarEntries(calendarResponse);
+          }
+        } catch {
+          if (active) {
+            setMuralNotes([]);
+            setCalendarEntries([]);
+          }
+        }
+
         if (currentUser.role === "Admin") {
           const auditResponse = await request(buildAuditTimelinePath(defaultAuditPeriod, createDefaultAuditRange()), { token });
           if (active) {
@@ -480,10 +671,14 @@ function App() {
         } else {
           setAuditTimeline([]);
         }
-      } catch {
-        localStorage.removeItem(TOKEN_KEY);
+      } catch (error) {
         if (!active) return;
-        setToken("");
+        if (error.status === 401) {
+          localStorage.removeItem(TOKEN_KEY);
+          setToken("");
+        } else {
+          setMessage("Não foi possível carregar os dados. Verifique a conexão e recarregue a página.");
+        }
       } finally {
         if (active) setReady(true);
       }
@@ -527,10 +722,21 @@ function App() {
     let cancelled = false;
     const itemsById = new Map(items.map((item) => [item.id, item]));
 
+    const filtered = items.filter((item) => itemMatchesInventoryFilters(item, inventoryFilters));
+    const totalPages = Math.max(1, Math.ceil(filtered.length / inventoryPageSize));
+    const page = Math.min(inventoryPage, totalPages);
+    const visibleIds = new Set(
+      filtered
+        .slice((page - 1) * inventoryPageSize, page * inventoryPageSize)
+        .map((item) => item.id),
+    );
+    if (editingItemId) visibleIds.add(editingItemId);
+    if (focusedItemId) visibleIds.add(focusedItemId);
+
     itemPhotoObjectUrlsRef.current.forEach((entry, itemId) => {
       const item = itemsById.get(itemId);
 
-      if (!item?.photoFileName || item.photoFileName !== entry.fileName) {
+      if (!item?.photoFileName || item.photoFileName !== entry.fileName || !visibleIds.has(itemId)) {
         URL.revokeObjectURL(entry.url);
         itemPhotoObjectUrlsRef.current.delete(itemId);
       }
@@ -543,20 +749,13 @@ function App() {
     setItemPhotoUrls(nextPhotoUrls);
 
     items
-      .filter((item) => item.photoFileName)
+      .filter((item) => item.photoFileName && visibleIds.has(item.id))
       .forEach(async (item) => {
         const currentEntry = itemPhotoObjectUrlsRef.current.get(item.id);
         if (currentEntry?.fileName === item.photoFileName) return;
 
         try {
-          const response = await fetch(`${API_BASE}/api/items/${item.id}/photo`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          });
-
-          if (!response.ok) return;
-
+          const response = await request(`/api/items/${item.id}/photo`, { token, raw: true });
           const blob = await response.blob();
           const objectUrl = URL.createObjectURL(blob);
 
@@ -583,7 +782,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [items, token]);
+  }, [items, token, inventoryFilters, inventoryPage, editingItemId, focusedItemId]);
 
   useEffect(() => {
     if (!adminSettingsOpen) return undefined;
@@ -649,15 +848,41 @@ function App() {
   }, [auditPage, auditTimeline.length, inventoryPage]);
 
   async function loadWorkspace(currentToken, currentUser = user) {
+    const requestId = ++workspaceRequestRef.current;
+    const isStale = () => requestId !== workspaceRequestRef.current;
     const [itemsResponse, noteResponse, locationResponse] = await Promise.all([
       request("/api/items", { token: currentToken }),
       request("/api/me/notes", { token: currentToken }),
       request("/api/locations", { token: currentToken }),
     ]);
 
+    if (isStale()) {
+      return null;
+    }
+
     setItems(itemsResponse);
     setNotes(noteResponse);
     setCustomLocations(locationResponse);
+
+    try {
+      const [muralResponse, calendarResponse] = await Promise.all([
+        request("/api/mural", { token: currentToken }),
+        request("/api/calendar", { token: currentToken }),
+      ]);
+      if (!isStale()) {
+        setMuralNotes(muralResponse);
+        setCalendarEntries(calendarResponse);
+      }
+    } catch {
+      if (!isStale()) {
+        setMuralNotes([]);
+        setCalendarEntries([]);
+      }
+    }
+
+    if (isStale()) {
+      return null;
+    }
 
     const nextItemId = itemsResponse.find((item) => item.id === focusedItemId)?.id ?? null;
     setFocusedItemId(nextItemId);
@@ -683,13 +908,16 @@ function App() {
       return;
     }
 
+    const requestId = ++itemHistoryRequestRef.current;
     const response = await request(`/api/items/${itemId}/movements`, { token: currentToken });
-    setItemHistory(response);
+    if (requestId === itemHistoryRequestRef.current) {
+      setItemHistory(response);
+    }
   }
 
-  async function refreshData(nextToken = token, nextUser = user) {
-    if (!nextToken) return;
-    return await loadWorkspace(nextToken, nextUser);
+  async function refreshData() {
+    if (!token) return;
+    return await loadWorkspace(token, user);
   }
 
   async function loadAuditTimeline(currentToken = token, period = auditPeriod, range = auditCustomRange) {
@@ -697,14 +925,20 @@ function App() {
 
     setAuditLoading(true);
 
+    const requestId = ++auditTimelineRequestRef.current;
     try {
       const auditResponse = await request(buildAuditTimelinePath(period, range), { token: currentToken });
-      setAuditTimeline(auditResponse);
-      setAuditPage(1);
+      if (requestId === auditTimelineRequestRef.current) {
+        setAuditTimeline(auditResponse);
+        setAuditPage(1);
+        setLoadedAuditLabel(getAuditPeriodLabel(period, range));
+      }
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
-      setAuditLoading(false);
+      if (requestId === auditTimelineRequestRef.current) {
+        setAuditLoading(false);
+      }
     }
   }
 
@@ -738,8 +972,9 @@ function App() {
       localStorage.setItem(TOKEN_KEY, response.token);
       setToken(response.token);
       setUser(response.user);
-      await loadWorkspace(response.token, response.user);
-      await loadAdminUsers(response.token);
+      if (response.user.role !== "Admin") {
+        setActiveView("search");
+      }
     } catch (error) {
       setAuthError(error.message);
     } finally {
@@ -796,32 +1031,49 @@ function App() {
     }
   }
 
+  function clearLocalSession() {
+    localStorage.removeItem(TOKEN_KEY);
+    setToken("");
+    setUser(null);
+    setItems([]);
+    setCustomLocations([]);
+    setNewLocationForm(emptyLocationForm);
+    setItemHistory([]);
+    setAuditTimeline([]);
+    setNotes([]);
+    setNoteForm(emptyNoteForm);
+    setEditingNoteId(null);
+    setNoteEditReturnView(null);
+    setMuralNotes([]);
+    setCalendarEntries([]);
+    resetCalendarUi();
+    setEditingItemId(null);
+    setItemEditReturnView(null);
+    setFocusedItemId(null);
+    setActiveView("items");
+    setMobileMenuOpen(false);
+    setAdminSettingsOpen(false);
+    setAdminUsers([]);
+    setEditingManagedUserId(null);
+    setManagedUserForm(emptyManagedUserForm);
+  }
+
+  function handleRequestError(error) {
+    if (error.status === 401) {
+      clearLocalSession();
+      setAuthError("Sessão expirada. Entre novamente.");
+      return;
+    }
+    setMessage(error.message);
+  }
+
   async function handleLogout() {
     try {
       await request("/api/auth/logout", { token, method: "POST" });
     } catch {
       // Ignore logout transport errors; local session is still cleared.
     } finally {
-      localStorage.removeItem(TOKEN_KEY);
-      setToken("");
-      setUser(null);
-      setItems([]);
-      setCustomLocations([]);
-      setNewLocationForm(emptyLocationForm);
-      setItemHistory([]);
-      setAuditTimeline([]);
-      setNotes([]);
-      setNoteForm(emptyNoteForm);
-      setEditingNoteId(null);
-      setEditingItemId(null);
-      setItemEditReturnView(null);
-      setFocusedItemId(null);
-      setActiveView("items");
-      setMobileMenuOpen(false);
-      setAdminSettingsOpen(false);
-      setAdminUsers([]);
-      setEditingManagedUserId(null);
-      setManagedUserForm(emptyManagedUserForm);
+      clearLocalSession();
     }
   }
 
@@ -834,7 +1086,7 @@ function App() {
       const usersResponse = await request("/api/auth/users", { token: currentToken });
       setAdminUsers(usersResponse);
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setAdminSettingsLoading(false);
     }
@@ -891,9 +1143,9 @@ function App() {
 
       setEditingManagedUserId(null);
       setManagedUserForm(emptyManagedUserForm);
-      setMessage("Usuário atualizado.");
+      setMessage("Usuário atualizado.", "success");
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setBusy(false);
     }
@@ -915,10 +1167,10 @@ function App() {
       });
 
       setAdminUsers((current) => current.filter((item) => item.id !== targetUser.id));
-      setMessage("Usuário excluído.");
+      setMessage("Usuário excluído.", "success");
       await refreshData();
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setBusy(false);
     }
@@ -932,7 +1184,7 @@ function App() {
     }
 
     const existingLocation = availableLocationOptions.find(
-      (location) => location.localeCompare(nextLocation, "pt-BR", { sensitivity: "base" }) === 0
+      (location) => location.localeCompare(nextLocation, "pt-BR", { sensitivity: "accent" }) === 0
     );
 
     if (existingLocation) {
@@ -960,9 +1212,9 @@ function App() {
       setCustomLocations((current) => Array.from(new Set([...current, resolvedLocation])));
       setItemForm((current) => ({ ...current, location: resolvedLocation }));
       setNewLocationForm(emptyLocationForm);
-      setMessage("Localização adicionada.");
+      setMessage("Localização adicionada.", "success");
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
       setNewLocationForm((current) => ({ ...current, saving: false }));
     }
   }
@@ -993,8 +1245,8 @@ function App() {
 
     const duplicateLocation = availableLocationOptions.find(
       (location) =>
-        location.localeCompare(nextLocation, "pt-BR", { sensitivity: "base" }) === 0 &&
-        location.localeCompare(currentLocation, "pt-BR", { sensitivity: "base" }) !== 0
+        location.localeCompare(nextLocation, "pt-BR", { sensitivity: "accent" }) === 0 &&
+        location.localeCompare(currentLocation, "pt-BR", { sensitivity: "accent" }) !== 0
     );
 
     if (duplicateLocation) {
@@ -1027,10 +1279,10 @@ function App() {
         location: current.location === currentLocation ? resolvedLocation : current.location,
       }));
       setNewLocationForm(emptyLocationForm);
-      setMessage("Localização editada.");
+      setMessage("Localização editada.", "success");
       await refreshData();
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
       setNewLocationForm((current) => ({ ...current, editing: false }));
     }
   }
@@ -1054,7 +1306,7 @@ function App() {
   }
 
   async function handleRemoveLocation() {
-    const locationToRemove = newLocationForm.editName || newLocationForm.removeValue;
+    const locationToRemove = newLocationForm.editName;
     if (!locationToRemove) {
       setMessage("Selecione a localização para excluir.");
       return;
@@ -1085,12 +1337,11 @@ function App() {
         ...current,
         editName: "",
         editValue: "",
-        removeValue: "",
         removing: false,
       }));
-      setMessage("Localização excluída.");
+      setMessage("Localização excluída.", "success");
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
       setNewLocationForm((current) => ({ ...current, removing: false }));
     }
   }
@@ -1123,14 +1374,14 @@ function App() {
           method: "PUT",
           body: payload,
         });
-        setMessage("Item atualizado com sucesso.");
+        setMessage("Item atualizado com sucesso.", "success");
       } else {
         await request("/api/items", {
           token,
           method: "POST",
           body: payload,
         });
-        setMessage("Item criado com sucesso.");
+        setMessage("Item criado com sucesso.", "success");
       }
 
       setItemForm(emptyItemForm);
@@ -1150,7 +1401,7 @@ function App() {
       }
       setItemAction(null);
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setBusy(false);
     }
@@ -1172,9 +1423,9 @@ function App() {
         closeItemAction();
       }
       await refreshData();
-      setMessage("Item removido do inventário.");
+      setMessage("Item removido do inventário.", "success");
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setBusy(false);
     }
@@ -1215,7 +1466,7 @@ function App() {
         removePhoto: false,
       }));
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     }
   }
 
@@ -1277,13 +1528,11 @@ function App() {
       const sameResponsiblePerson =
         transferForm.destinationType === "Pessoa" &&
         Boolean(selectedTransferItem.responsiblePerson?.trim()) &&
-        transferForm.destinationPerson.trim().toLowerCase() ===
-          (selectedTransferItem.responsiblePerson?.trim() ?? "").toLowerCase();
+        sameTextPtBr(transferForm.destinationPerson, selectedTransferItem.responsiblePerson);
 
       if (
         transferForm.destinationType === "Local" &&
-        transferForm.toLocation.trim().toLocaleLowerCase("pt-BR") ===
-          (selectedTransferItem.location?.trim() ?? "").toLocaleLowerCase("pt-BR") &&
+        sameTextPtBr(transferForm.toLocation, selectedTransferItem.location) &&
         !clearsResponsiblePerson
       ) {
         throw new Error("Altere o destino do item.");
@@ -1313,11 +1562,11 @@ function App() {
         },
       });
 
-      setMessage("Transferência registrada com sucesso.");
+      setMessage("Transferência registrada com sucesso.", "success");
       closeItemAction();
       await refreshData();
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setBusy(false);
     }
@@ -1360,19 +1609,31 @@ function App() {
         },
       });
 
-      setMessage("Conservação atualizada com sucesso.");
+      setMessage("Conservação atualizada com sucesso.", "success");
       closeItemAction();
       await refreshData();
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setBusy(false);
     }
   }
 
+  async function loadInto(endpoint, setter, currentToken = token) {
+    const response = await request(endpoint, { token: currentToken });
+    setter(response);
+  }
+
   async function loadNotes(currentToken = token) {
-    const response = await request("/api/me/notes", { token: currentToken });
-    setNotes(response);
+    await loadInto("/api/me/notes", setNotes, currentToken);
+  }
+
+  async function loadMural(currentToken = token) {
+    await loadInto("/api/mural", setMuralNotes, currentToken);
+  }
+
+  async function loadCalendar(currentToken = token) {
+    await loadInto("/api/calendar", setCalendarEntries, currentToken);
   }
 
   async function handleSaveNote(event) {
@@ -1385,6 +1646,7 @@ function App() {
         title: noteForm.title,
         content: noteForm.content,
         tags: noteForm.tags,
+        isPublic: noteForm.isPublic,
       };
 
       await request(editingNoteId ? `/api/me/notes/${editingNoteId}` : "/api/me/notes", {
@@ -1392,12 +1654,16 @@ function App() {
         method: editingNoteId ? "PUT" : "POST",
         body: payload,
       });
-      setMessage(editingNoteId ? "Anotação atualizada." : "Anotação criada.");
+      setMessage(editingNoteId ? "Anotação atualizada." : "Anotação criada.", "success");
       setNoteForm(emptyNoteForm);
       setEditingNoteId(null);
-      await loadNotes();
+      if (editingNoteId && noteEditReturnView) {
+        setActiveView(noteEditReturnView);
+      }
+      setNoteEditReturnView(null);
+      await Promise.all([loadNotes(), loadMural()]);
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setBusy(false);
     }
@@ -1405,11 +1671,38 @@ function App() {
 
   function handleEditNote(noteItem) {
     setEditingNoteId(noteItem.id);
+    setNoteEditReturnView(null);
     setNoteForm({
       title: noteItem.title ?? "",
       content: noteItem.content ?? "",
       tags: noteItem.tags ?? "",
+      isPublic: Boolean(noteItem.isPublic),
     });
+  }
+
+  async function handleEditMuralNote(muralNote) {
+    let ownNote = notes.find((noteItem) => noteItem.id === muralNote.id);
+
+    if (!ownNote) {
+      try {
+        const response = await request("/api/me/notes", { token });
+        setNotes(response);
+        ownNote = response.find((noteItem) => noteItem.id === muralNote.id);
+      } catch (error) {
+        handleRequestError(error);
+        return;
+      }
+    }
+
+    if (!ownNote) {
+      setMessage("Anotação não encontrada. O mural foi atualizado.");
+      await loadMural();
+      return;
+    }
+
+    navigateTo("notes");
+    handleEditNote(ownNote);
+    setNoteEditReturnView("mural");
   }
 
   async function handleDeleteNote(noteId) {
@@ -1423,14 +1716,174 @@ function App() {
       if (editingNoteId === noteId) {
         setEditingNoteId(null);
         setNoteForm(emptyNoteForm);
+        setNoteEditReturnView(null);
       }
-      setMessage("Anotação excluída.");
-      await loadNotes();
+      setMessage("Anotação excluída.", "success");
+      await Promise.all([loadNotes(), loadMural()]);
     } catch (error) {
-      setMessage(error.message);
+      handleRequestError(error);
     } finally {
       setBusy(false);
     }
+  }
+
+  function canManageCalendarEntry(entry) {
+    return isAdmin || entry.createdByUserId === user?.id;
+  }
+
+  function openCalendarCreate(dateIso = "", returnToDay = false) {
+    setEditingCalendarEntryId(null);
+    setCalendarForm({
+      ...emptyCalendarForm,
+      dueDate: dateIso || selectedCalendarDate || todayIso(),
+    });
+    setCalendarDetailEntryId(null);
+    setCalendarDayModalOpen(false);
+    setCalendarFormReturnToDay(returnToDay);
+    setCalendarFormOpen(true);
+  }
+
+  function openCalendarEdit(entry, returnToDay = false) {
+    setEditingCalendarEntryId(entry.id);
+    setCalendarForm({
+      dueDate: entry.dueDate ?? "",
+      seiNumber: entry.seiNumber ?? "",
+      subject: entry.subject ?? "",
+      notes: entry.notes ?? "",
+    });
+    setCalendarDetailEntryId(null);
+    setCalendarDayModalOpen(false);
+    setCalendarFormReturnToDay(returnToDay);
+    setCalendarFormOpen(true);
+  }
+
+  function openCalendarDayModal(dateIso) {
+    setSelectedCalendarDate(dateIso);
+    setCalendarDetailEntryId(null);
+    setCalendarDayModalOpen(true);
+  }
+
+  function closeCalendarDayModal() {
+    setCalendarDayModalOpen(false);
+    setCalendarDetailEntryId(null);
+  }
+
+  function renderCalendarDetailBody(entry, fromDayModal = false) {
+    return (
+      <>
+        <div className="detail-summary">
+          {fromDayModal ? null : (
+            <p>
+              <strong>Prazo:</strong> {formatIsoDateBr(entry.dueDate)}
+            </p>
+          )}
+          <p>
+            <strong>Número do SEI:</strong> {entry.seiNumber?.trim() || "-"}
+          </p>
+          <p className="item-notes-display">
+            <strong>Observações:</strong> {entry.notes?.trim() || "-"}
+          </p>
+          <p>
+            <strong>Criado por:</strong> {entry.authorName}
+          </p>
+          <small>Criado em {formatDateTime(entry.createdAt)}</small>
+        </div>
+        {canManageCalendarEntry(entry) ? (
+          <div className="button-row">
+            <button className="primary" type="button" onClick={() => openCalendarEdit(entry, fromDayModal)}>
+              Editar
+            </button>
+            <button
+              className="ghost"
+              type="button"
+              onClick={() => handleDeleteCalendarEntry(entry.id)}
+              disabled={busy}
+            >
+              Excluir
+            </button>
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
+  function closeCalendarForm() {
+    const returnEntryId = calendarFormReturnToDay ? editingCalendarEntryId : null;
+    setCalendarFormOpen(false);
+    setEditingCalendarEntryId(null);
+    setCalendarForm(emptyCalendarForm);
+    if (calendarFormReturnToDay) {
+      setCalendarFormReturnToDay(false);
+      setCalendarDetailEntryId(returnEntryId);
+      setCalendarDayModalOpen(true);
+    }
+  }
+
+  async function handleSaveCalendarEntry(event) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+
+    try {
+      const payload = {
+        dueDate: calendarForm.dueDate,
+        seiNumber: calendarForm.seiNumber,
+        subject: calendarForm.subject,
+        notes: calendarForm.notes,
+      };
+
+      await request(editingCalendarEntryId ? `/api/calendar/${editingCalendarEntryId}` : "/api/calendar", {
+        token,
+        method: editingCalendarEntryId ? "PUT" : "POST",
+        body: payload,
+      });
+      setMessage(
+        editingCalendarEntryId ? "Anotação do calendário atualizada." : "Anotação adicionada ao calendário.",
+        "success",
+      );
+      const [savedYear, savedMonth] = calendarForm.dueDate.split("-").map(Number);
+      if (savedYear && savedMonth) {
+        setCalendarMonth({ year: savedYear, month: savedMonth - 1 });
+      }
+      setSelectedCalendarDate(calendarForm.dueDate);
+      closeCalendarForm();
+      await loadCalendar();
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteCalendarEntry(entryId) {
+    if (!window.confirm("Excluir esta anotação do calendário?")) return;
+
+    setBusy(true);
+    setMessage("");
+
+    try {
+      await request(`/api/calendar/${entryId}`, { token, method: "DELETE" });
+      setCalendarDetailEntryId(null);
+      setMessage("Anotação do calendário excluída.", "success");
+      await loadCalendar();
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function changeCalendarMonth(offset) {
+    setCalendarMonth((current) => {
+      const date = new Date(current.year, current.month + offset, 1);
+      return { year: date.getFullYear(), month: date.getMonth() };
+    });
+  }
+
+  function goToCalendarToday() {
+    const now = new Date();
+    setCalendarMonth({ year: now.getFullYear(), month: now.getMonth() });
+    setSelectedCalendarDate(localDateIso(now));
   }
 
   function makeItemActionHandler(actionType, loader = null) {
@@ -1453,7 +1906,7 @@ function App() {
       try {
         await loader(token, itemId);
       } catch (error) {
-        setMessage(error.message);
+        handleRequestError(error);
       } finally {
         setBusy(false);
       }
@@ -1542,7 +1995,7 @@ function App() {
     if (!printReport({
       iframeTitle: "Exportação da auditoria",
       title: "Auditoria administrativa",
-      subtitle: `Período: ${getAuditPeriodLabel(auditPeriod, auditCustomRange)} · Exportado em ${formatDateTime(new Date().toISOString())}`,
+      subtitle: `Período: ${loadedAuditLabel} · Exportado em ${formatDateTime(new Date().toISOString())}`,
       tableStyle: "table { font-size: 10px; }",
       columns: ["Data", "Responsável", "Ação", "Área", "Resumo", "Detalhes"],
       rows,
@@ -1584,12 +2037,19 @@ function App() {
   const auditTotalPages = Math.max(1, Math.ceil(auditTimeline.length / auditPageSize));
   const safeAuditPage = Math.min(auditPage, auditTotalPages);
   const paginatedAuditTimeline = auditTimeline.slice((safeAuditPage - 1) * auditPageSize, safeAuditPage * auditPageSize);
-  const filteredItems = items.filter((item) => itemMatchesInventoryFilters(item, inventoryFilters));
+  const filteredItems = useMemo(
+    () => items.filter((item) => itemMatchesInventoryFilters(item, inventoryFilters)),
+    [items, inventoryFilters],
+  );
   const inventoryTotalPages = Math.max(1, Math.ceil(filteredItems.length / inventoryPageSize));
   const safeInventoryPage = Math.min(inventoryPage, inventoryTotalPages);
-  const paginatedInventoryItems = filteredItems.slice(
-    (safeInventoryPage - 1) * inventoryPageSize,
-    safeInventoryPage * inventoryPageSize,
+  const paginatedInventoryItems = useMemo(
+    () =>
+      filteredItems.slice(
+        (safeInventoryPage - 1) * inventoryPageSize,
+        safeInventoryPage * inventoryPageSize,
+      ),
+    [filteredItems, safeInventoryPage],
   );
   const selectedItemIsOnInventoryPage = paginatedInventoryItems.some((item) => item.id === focusedItemId);
   const itemFormPhotoPreviewUrl = itemForm.removePhoto
@@ -1839,13 +2299,15 @@ function App() {
         </div>
 
         <nav className="side-nav" aria-label="Menu principal">
-          <button
-            className={activeView === "items" ? "active" : ""}
-            type="button"
-            onClick={() => navigateTo("items")}
-          >
-            Cadastro
-          </button>
+          {isAdmin ? (
+            <button
+              className={activeView === "items" ? "active" : ""}
+              type="button"
+              onClick={() => navigateTo("items")}
+            >
+              Cadastro
+            </button>
+          ) : null}
           <button
             className={activeView === "search" ? "active" : ""}
             type="button"
@@ -1859,6 +2321,20 @@ function App() {
             onClick={() => navigateTo("notes")}
           >
             Anotações
+          </button>
+          <button
+            className={activeView === "mural" ? "active" : ""}
+            type="button"
+            onClick={() => navigateTo("mural")}
+          >
+            Mural
+          </button>
+          <button
+            className={activeView === "calendar" ? "active" : ""}
+            type="button"
+            onClick={() => navigateTo("calendar")}
+          >
+            Calendário
           </button>
           {isAdmin ? (
             <button
@@ -1880,15 +2356,7 @@ function App() {
         <header className="page-header">
           <div>
             <p className="eyebrow">Painel operacional</p>
-            <h1>
-              {activeView === "items"
-                ? "Cadastro de itens"
-                : activeView === "search"
-                  ? "Inventário"
-                  : activeView === "notes"
-                    ? "Anotações privadas"
-                    : "Auditoria administrativa"}
-            </h1>
+            <h1>{VIEW_TITLES[activeView] ?? "Painel operacional"}</h1>
           </div>
           <div className="admin-settings" ref={adminSettingsRef}>
               <button
@@ -2143,6 +2611,7 @@ function App() {
                   value={itemForm.name}
                   onChange={(event) => setItemForm((current) => ({ ...current, name: event.target.value }))}
                   placeholder="Insira o nome do item"
+                  maxLength={300}
                   required
                 />
               </label>
@@ -2171,7 +2640,7 @@ function App() {
                 </select>
               </label>
               <label>
-                Número de patrimônio
+                Tombo
                 <input
                   type="text"
                   inputMode="numeric"
@@ -2212,7 +2681,6 @@ function App() {
                         editValue: "",
                         editName: "",
                         renaming: false,
-                        removeValue: "",
                       }))
                     }
                     title={newLocationForm.open ? "Fechar gerenciamento de localizações" : "Adicionar localização"}
@@ -2272,7 +2740,6 @@ function App() {
                               ...current,
                               editName: event.target.value,
                               editValue: event.target.value,
-                              removeValue: event.target.value,
                               renaming: false,
                             }))
                           }
@@ -2349,6 +2816,7 @@ function App() {
                     value={itemForm.notes}
                     onChange={(event) => setItemForm((current) => ({ ...current, notes: event.target.value }))}
                     placeholder="Informações adicionais sobre o item"
+                    maxLength={5000}
                   />
                 </label>
               </div>
@@ -2399,7 +2867,7 @@ function App() {
                   <button
                     className="icon-button"
                     type="button"
-                    onClick={() => refreshData()}
+                    onClick={() => refreshData().catch((error) => handleRequestError(error))}
                     disabled={busy}
                     title="Atualizar inventário"
                     aria-label="Atualizar inventário"
@@ -2479,7 +2947,7 @@ function App() {
                   />
                 </label>
                 <label>
-                  Patrimônio
+                  Tombo
                   <input
                     inputMode="numeric"
                     pattern="[0-9]*"
@@ -2528,7 +2996,7 @@ function App() {
                     ))}
                   </select>
                 </label>
-                <label className="full-width">
+                <label>
                   Localização
                   <select
                     value={inventoryFilters.location}
@@ -2546,29 +3014,15 @@ function App() {
                   </select>
                 </label>
                 <label>
-                  Responsável
+                  Detentor
                   <input
                     value={inventoryFilters.responsible}
                     onChange={(event) => {
                       setInventoryPage(1);
                       setInventoryFilters((current) => ({ ...current, responsible: event.target.value }));
                     }}
-                    placeholder="Filtrar por responsável"
+                    placeholder="Filtrar por detentor do item"
                   />
-                </label>
-                <label>
-                  Descargueado
-                  <select
-                    value={inventoryFilters.discharged}
-                    onChange={(event) => {
-                      setInventoryPage(1);
-                      setInventoryFilters((current) => ({ ...current, discharged: event.target.value }));
-                    }}
-                  >
-                    <option value="">Todos</option>
-                    <option value="nao">Não</option>
-                    <option value="sim">Sim</option>
-                  </select>
                 </label>
               </div>
           <div className="table-wrap inventory-table-wrap">
@@ -2577,11 +3031,11 @@ function App() {
                 <tr>
                   <th>Item</th>
                   {visibleColumns.includes("quantity") && <th title="Quantidade">Qtd.</th>}
-                  {visibleColumns.includes("assetTag") && <th title="Número de patrimônio">Tombo</th>}
+                  {visibleColumns.includes("assetTag") && <th>Tombo</th>}
                   {visibleColumns.includes("nature") && <th>Natureza</th>}
                   {visibleColumns.includes("location") && <th>Localização</th>}
                   {visibleColumns.includes("condition") && <th>Conservação</th>}
-                  {visibleColumns.includes("responsible") && <th>Responsável</th>}
+                  {visibleColumns.includes("responsible") && <th>Detentor</th>}
                   {visibleColumns.includes("discharged") && (
                     <th className="center-column" title="Descargueado">
                       Desc.
@@ -2592,6 +3046,15 @@ function App() {
                 </tr>
               </thead>
               <tbody>
+                {paginatedInventoryItems.length === 0 ? (
+                  <tr>
+                    <td className="table-empty" colSpan={visibleColumns.length + 2}>
+                      {hasInventoryFilters
+                        ? "Nenhum item encontrado para os filtros aplicados."
+                        : "Nenhum item cadastrado no inventário."}
+                    </td>
+                  </tr>
+                ) : null}
                 {paginatedInventoryItems.map((item) => (
                   <tr key={item.id} className={focusedItemId === item.id && itemAction ? "active-row" : ""}>
                     <td className="item-name-cell">{item.name}</td>
@@ -2735,6 +3198,7 @@ function App() {
           <form className="stacked" onSubmit={handleSaveNote}>
             <input
               value={noteForm.title}
+              maxLength={200}
               onChange={(event) => setNoteForm((current) => ({ ...current, title: event.target.value }))}
               placeholder="Título da anotação"
               required
@@ -2742,15 +3206,25 @@ function App() {
             <textarea
               rows="9"
               value={noteForm.content}
+              maxLength={10000}
               onChange={(event) => setNoteForm((current) => ({ ...current, content: event.target.value }))}
               placeholder="Conteúdo da anotação..."
               required
             />
             <input
               value={noteForm.tags}
+              maxLength={500}
               onChange={(event) => setNoteForm((current) => ({ ...current, tags: event.target.value }))}
               placeholder="Etiquetas separadas por vírgula"
             />
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={noteForm.isPublic}
+                onChange={(event) => setNoteForm((current) => ({ ...current, isPublic: event.target.checked }))}
+              />
+              Disponibilizar no mural para todos os usuários
+            </label>
             <div className="button-row">
               <button className="primary" type="submit" disabled={busy}>
                 {editingNoteId ? "Salvar anotação" : "Adicionar anotação"}
@@ -2762,6 +3236,10 @@ function App() {
                   onClick={() => {
                     setEditingNoteId(null);
                     setNoteForm(emptyNoteForm);
+                    if (noteEditReturnView) {
+                      setActiveView(noteEditReturnView);
+                    }
+                    setNoteEditReturnView(null);
                   }}
                 >
                   Cancelar edição
@@ -2776,7 +3254,10 @@ function App() {
                 <div className="card-header">
                   <div>
                     <h3>{noteItem.title}</h3>
-                    <small>{formatDateTime(noteItem.updatedAt)}</small>
+                    <small>
+                      {formatDateTime(noteItem.updatedAt)}
+                      {noteItem.isPublic ? " · Publicada no mural" : ""}
+                    </small>
                   </div>
                   <div className="row-actions">
                     <button
@@ -2800,17 +3281,278 @@ function App() {
                   </div>
                 </div>
                 <p>{noteItem.content}</p>
-                {noteItem.tags ? (
-                  <div className="tag-list">
-                    {noteItem.tags.split(",").map((tag) => {
-                      const trimmedTag = tag.trim();
-                      return trimmedTag ? <span key={trimmedTag}>{trimmedTag}</span> : null;
-                    })}
-                  </div>
-                ) : null}
+                <TagList tags={noteItem.tags} />
               </article>
             ))}
           </div>
+          </article>
+        ) : null}
+
+        {activeView === "mural" ? (
+          <article className="panel section-card">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Compartilhado</p>
+                <h2>Mural de anotações</h2>
+              </div>
+              <div className="section-actions">
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="Atualizar mural"
+                  title="Atualizar mural"
+                  onClick={() => loadMural().catch((error) => handleRequestError(error))}
+                >
+                  <Icon type="refresh" />
+                </button>
+              </div>
+            </div>
+
+            {muralNotes.length === 0 ? (
+              <p className="muted wide-text">
+                Nenhuma anotação publicada no mural.
+                <br />
+                Para publicar, marque a opção "Disponibilizar no mural" ao salvar uma anotação.
+              </p>
+            ) : (
+              <div className="card-grid">
+                {muralNotes.map((muralNote) => (
+                  <article className="content-card" key={muralNote.id}>
+                    <div className="card-header">
+                      <div>
+                        <h3>{muralNote.title}</h3>
+                        <small>
+                          {muralNote.authorName} · {formatDateTime(muralNote.updatedAt)}
+                        </small>
+                      </div>
+                      {muralNote.authorUserId === user.id ? (
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            className="icon-button"
+                            onClick={() => handleEditMuralNote(muralNote)}
+                            title="Editar"
+                            aria-label="Editar"
+                          >
+                            <Icon type="edit" />
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                    <p>{muralNote.content}</p>
+                    <TagList tags={muralNote.tags} />
+                  </article>
+                ))}
+              </div>
+            )}
+          </article>
+        ) : null}
+
+        {activeView === "calendar" ? (
+          <article className="panel section-card">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Agenda</p>
+                <h2>Prazos e processos</h2>
+              </div>
+              <div className="section-actions">
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="Atualizar calendário"
+                  title="Atualizar calendário"
+                  onClick={() => loadCalendar().catch((error) => handleRequestError(error))}
+                >
+                  <Icon type="refresh" />
+                </button>
+                <button className="primary" type="button" onClick={() => openCalendarCreate()}>
+                  Adicionar anotação
+                </button>
+              </div>
+            </div>
+
+            <div className="filter-grid">
+              <label>
+                Número do SEI
+                <input
+                  value={calendarSearch.seiNumber}
+                  onChange={(event) =>
+                    setCalendarSearch((current) => ({ ...current, seiNumber: event.target.value }))
+                  }
+                  placeholder="Pesquisar por número do SEI"
+                />
+              </label>
+              <label>
+                Período de prazo
+                <select
+                  value={calendarSearch.window}
+                  onChange={(event) =>
+                    setCalendarSearch((current) => ({ ...current, window: event.target.value }))
+                  }
+                >
+                  {calendarSearchWindowOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="full-width">
+                Assunto
+                <input
+                  value={calendarSearch.subject}
+                  onChange={(event) =>
+                    setCalendarSearch((current) => ({ ...current, subject: event.target.value }))
+                  }
+                  placeholder="Pesquisar por assunto"
+                />
+              </label>
+            </div>
+
+            {calendarSearchActive ? (
+              <>
+                <div className="section-heading calendar-results-heading">
+                  <div>
+                    <p className="eyebrow">Resultado da pesquisa</p>
+                    <h2>
+                      {calendarSearchResults.length === 0
+                        ? "Nenhuma anotação"
+                        : calendarSearchResults.length === 1
+                          ? "1 anotação"
+                          : `${calendarSearchResults.length} anotações`}
+                    </h2>
+                  </div>
+                  <div className="section-actions">
+                    <button
+                      className="ghost"
+                      type="button"
+                      onClick={() => setCalendarSearch(emptyCalendarSearch)}
+                    >
+                      Limpar pesquisa
+                    </button>
+                  </div>
+                </div>
+                {calendarSearchResults.length === 0 ? (
+                  <p className="muted">Nenhuma anotação encontrada para a pesquisa.</p>
+                ) : (
+                  <div className="card-grid">
+                    {calendarSearchResults.map((entry) => (
+                      <article className="content-card" key={entry.id}>
+                        <div className="card-header">
+                          <div>
+                            <h3>{entry.subject}</h3>
+                            <small>
+                              Prazo: {formatIsoDateBr(entry.dueDate)}
+                              {entry.seiNumber?.trim() ? ` · SEI ${entry.seiNumber}` : ""}
+                            </small>
+                          </div>
+                          <div className="row-actions">
+                            <button
+                              type="button"
+                              className="icon-button"
+                              onClick={() => setCalendarDetailEntryId(entry.id)}
+                              title="Ver detalhes"
+                              aria-label="Ver detalhes"
+                            >
+                              <Icon type="eye" />
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="section-divider" />
+                <div className="calendar-toolbar">
+                  <button
+                    className="ghost"
+                    type="button"
+                    onClick={() => changeCalendarMonth(-1)}
+                    aria-label="Mês anterior"
+                  >
+                    ‹
+                  </button>
+                  <select
+                    aria-label="Mês"
+                    value={calendarMonth.month}
+                    onChange={(event) =>
+                      setCalendarMonth((current) => ({ ...current, month: Number(event.target.value) }))
+                    }
+                  >
+                    {calendarMonthNames.map((label, index) => (
+                      <option key={label} value={index}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Ano"
+                    value={calendarMonth.year}
+                    onChange={(event) =>
+                      setCalendarMonth((current) => ({ ...current, year: Number(event.target.value) }))
+                    }
+                  >
+                    {calendarYearOptions.map((year) => (
+                      <option key={year} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="ghost"
+                    type="button"
+                    onClick={() => changeCalendarMonth(1)}
+                    aria-label="Próximo mês"
+                  >
+                    ›
+                  </button>
+                  <button className="ghost" type="button" onClick={goToCalendarToday}>
+                    Hoje
+                  </button>
+                </div>
+
+                <div className="calendar-grid">
+                  {calendarWeekDayLabels.map((label) => (
+                    <span className="calendar-weekday" key={label}>
+                      {label}
+                    </span>
+                  ))}
+                  {calendarDays.map((day) => {
+                    const dayEntries = day.inMonth ? (calendarEntriesByDate.get(day.iso) ?? []) : [];
+                    const classes = ["calendar-day"];
+                    if (!day.inMonth) classes.push("outside");
+                    if (day.iso === todayIsoDate) classes.push("today");
+                    if (dayEntries.length > 0) {
+                      classes.push("has-entries");
+                      const daysUntilDue = daysUntilIsoDate(day.iso);
+                      if (daysUntilDue < 0) classes.push("overdue");
+                      else if (daysUntilDue < calendarUrgentWindowDays) classes.push("urgent");
+                    }
+                    if (day.iso === selectedCalendarDate) classes.push("selected");
+                    if (calendarDayModalOpen && day.iso === selectedCalendarDate) classes.push("active");
+
+                    return (
+                      <button
+                        key={day.iso}
+                        type="button"
+                        className={classes.join(" ")}
+                        disabled={!day.inMonth}
+                        onClick={() => openCalendarDayModal(day.iso)}
+                      >
+                        <span className="calendar-day-number">{day.dayNumber}</span>
+                        {dayEntries.length > 0 ? (
+                          <span className="calendar-day-count">{dayEntries.length}</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+
+              </>
+            )}
           </article>
         ) : null}
 
@@ -2822,6 +3564,16 @@ function App() {
                 <h2>Timeline administrativa</h2>
               </div>
               <div className="section-actions">
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="Atualizar auditoria"
+                  title="Atualizar auditoria"
+                  disabled={auditLoading}
+                  onClick={() => loadAuditTimeline(token, auditPeriod, auditCustomRange)}
+                >
+                  <Icon type="refresh" />
+                </button>
                 <button className="ghost" type="button" onClick={handleExportAuditPdf}>
                   Exportar PDF
                 </button>
@@ -3096,6 +3848,7 @@ function App() {
                           setTransferForm((current) => ({ ...current, destinationPerson: event.target.value }))
                         }
                         placeholder="Nome ou matrícula"
+                        maxLength={200}
                       />
                     </label>
                   )}
@@ -3156,10 +3909,209 @@ function App() {
       {toasts.length ? (
         <div className="toast-stack" role="status" aria-live="polite">
           {toasts.map((toast) => (
-            <div className="notice toast-message" key={toast.id}>
+            <div className={`notice toast-message ${toast.tone}`} key={toast.id}>
               {toast.text}
             </div>
           ))}
+        </div>
+      ) : null}
+      {calendarDayModalOpen ? (
+        <div
+          className="action-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Anotações do dia"
+          onMouseDown={closeCalendarDayModal}
+        >
+          <article
+            className="panel section-card action-modal-card calendar-day-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="photo-viewer-close action-modal-close"
+              type="button"
+              onClick={closeCalendarDayModal}
+              aria-label="Fechar anotações do dia"
+            >
+              ×
+            </button>
+            {calendarDetailEntry ? (
+              <div className="calendar-detail-view">
+                <button
+                  className="icon-button calendar-back-button"
+                  type="button"
+                  onClick={() => setCalendarDetailEntryId(null)}
+                  aria-label="Voltar para as anotações do dia"
+                  title="Voltar"
+                >
+                  ‹
+                </button>
+                <div className="calendar-detail-content">
+                  <div className="section-heading">
+                    <div>
+                      <h2>{calendarDetailEntry.subject}</h2>
+                      <p className="eyebrow">{formatIsoDateBr(calendarDetailEntry.dueDate)}</p>
+                    </div>
+                  </div>
+                  {renderCalendarDetailBody(calendarDetailEntry, true)}
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="section-heading">
+                  <div className="calendar-day-heading">
+                    <h2>Anotações do dia</h2>
+                    <p className="eyebrow">{formatIsoDateBr(selectedCalendarDate)}</p>
+                    <p className="muted calendar-day-total">
+                      {selectedCalendarDayEntries.length === 0
+                        ? "Nenhuma anotação para este dia"
+                        : selectedCalendarDayEntries.length === 1
+                          ? "1 anotação"
+                          : `${selectedCalendarDayEntries.length} anotações`}
+                    </p>
+                  </div>
+                </div>
+                {selectedCalendarDayEntries.length > 0 ? (
+                  <ul className="calendar-subject-list">
+                    {selectedCalendarDayEntries.map((entry) => (
+                      <li key={entry.id}>
+                        <button type="button" onClick={() => setCalendarDetailEntryId(entry.id)}>
+                          <span className="calendar-subject-name">{entry.subject}</span>
+                          <small>
+                            {entry.seiNumber?.trim() ? `SEI: ${entry.seiNumber}` : "SEI: N/A"}
+                          </small>
+                          {daysUntilIsoDate(entry.dueDate) < 0 ? (
+                            <span className="calendar-subject-badge overdue">Vencido</span>
+                          ) : isUrgentIsoDate(entry.dueDate) ? (
+                            <span className="calendar-subject-badge">Prazo próximo</span>
+                          ) : null}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                <div className="button-row">
+                  <button
+                    className="primary"
+                    type="button"
+                    title="Adicionar neste dia"
+                    onClick={() => openCalendarCreate(selectedCalendarDate, true)}
+                  >
+                    Adicionar anotação
+                  </button>
+                </div>
+              </>
+            )}
+          </article>
+        </div>
+      ) : null}
+      {calendarDetailEntry && !calendarDayModalOpen ? (
+        <div
+          className="action-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Detalhes da anotação do calendário"
+          onMouseDown={() => setCalendarDetailEntryId(null)}
+        >
+          <article className="panel section-card action-modal-card" onMouseDown={(event) => event.stopPropagation()}>
+            <button
+              className="photo-viewer-close action-modal-close"
+              type="button"
+              onClick={() => setCalendarDetailEntryId(null)}
+              aria-label="Fechar detalhes"
+            >
+              ×
+            </button>
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Calendário</p>
+                <h2>{calendarDetailEntry.subject}</h2>
+              </div>
+            </div>
+            {renderCalendarDetailBody(calendarDetailEntry)}
+          </article>
+        </div>
+      ) : null}
+      {calendarFormOpen ? (
+        <div
+          className="action-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Anotação do calendário"
+          onMouseDown={closeCalendarForm}
+        >
+          <article className="panel section-card action-modal-card" onMouseDown={(event) => event.stopPropagation()}>
+            <button
+              className="photo-viewer-close action-modal-close"
+              type="button"
+              onClick={closeCalendarForm}
+              aria-label="Fechar formulário"
+            >
+              ×
+            </button>
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Calendário</p>
+                <h2>{editingCalendarEntryId ? "Editar anotação" : "Nova anotação"}</h2>
+              </div>
+            </div>
+            <form className="form-grid" onSubmit={handleSaveCalendarEntry}>
+              <label>
+                Data do prazo
+                <input
+                  type="date"
+                  value={calendarForm.dueDate}
+                  onChange={(event) =>
+                    setCalendarForm((current) => ({ ...current, dueDate: event.target.value }))
+                  }
+                  required
+                />
+              </label>
+              <label>
+                Número do SEI
+                <input
+                  value={calendarForm.seiNumber}
+                  maxLength={50}
+                  onChange={(event) =>
+                    setCalendarForm((current) => ({ ...current, seiNumber: event.target.value }))
+                  }
+                  placeholder="Número do processo no SEI"
+                />
+              </label>
+              <label className="full-width">
+                Assunto
+                <input
+                  value={calendarForm.subject}
+                  maxLength={200}
+                  onChange={(event) =>
+                    setCalendarForm((current) => ({ ...current, subject: event.target.value }))
+                  }
+                  placeholder="Assunto do processo ou ofício"
+                  required
+                />
+              </label>
+              <label className="full-width">
+                Observações
+                <textarea
+                  rows="5"
+                  value={calendarForm.notes}
+                  maxLength={5000}
+                  onChange={(event) =>
+                    setCalendarForm((current) => ({ ...current, notes: event.target.value }))
+                  }
+                  placeholder="Detalhes adicionais..."
+                />
+              </label>
+              <div className="button-row full-width">
+                <button className="primary" type="submit" disabled={busy}>
+                  {editingCalendarEntryId ? "Salvar anotação" : "Adicionar anotação"}
+                </button>
+                <button className="ghost" type="button" onClick={closeCalendarForm}>
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </article>
         </div>
       ) : null}
       {photoViewer ? (

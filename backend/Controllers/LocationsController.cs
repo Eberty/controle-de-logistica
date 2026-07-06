@@ -64,16 +64,24 @@ public class LocationsController : AuthenticatedControllerBase
         };
 
         await using var transaction = await Context.Database.BeginTransactionAsync();
-        Context.LocationOptions.Add(location);
-        await Context.SaveChangesAsync();
-        await _auditLogger.LogAsync(
-            currentUser,
-            "Criação",
-            "Localização",
-            location.Id.ToString(),
-            location.Name,
-            "Localização cadastrada.");
-        await transaction.CommitAsync();
+        try
+        {
+            Context.LocationOptions.Add(location);
+            await Context.SaveChangesAsync();
+            await _auditLogger.LogAsync(
+                currentUser,
+                AuditActions.Create,
+                AuditEntityTypes.Location,
+                location.Id.ToString(),
+                location.Name,
+                "Localização cadastrada.");
+            await transaction.CommitAsync();
+        }
+        catch (DbUpdateException)
+        {
+            await transaction.RollbackAsync();
+            return Conflict(new { message = "Essa localização já existe." });
+        }
         return Created($"/api/locations/{location.Id}", location.Name);
     }
 
@@ -124,21 +132,18 @@ public class LocationsController : AuthenticatedControllerBase
             }
 
             var oldName = location.Name;
-            var itemsWithLocation = await QueryItemsByLocation(oldName).ToListAsync();
-
             var now = DateTime.UtcNow;
             location.Name = newName;
-            foreach (var item in itemsWithLocation)
-            {
-                item.Location = newName;
-                item.UpdatedAt = now;
-            }
-
             await Context.SaveChangesAsync();
+
+            await QueryItemsByLocation(oldName)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.Location, newName)
+                    .SetProperty(x => x.UpdatedAt, now));
             await _auditLogger.LogAsync(
                 currentUser,
-                "Atualização",
-                "Localização",
+                AuditActions.Update,
+                AuditEntityTypes.Location,
                 location.Id.ToString(),
                 location.Name,
                 $"Localização editada: {oldName} -> {location.Name}.");
@@ -190,8 +195,8 @@ public class LocationsController : AuthenticatedControllerBase
         await Context.SaveChangesAsync();
         await _auditLogger.LogAsync(
             currentUser,
-            "Exclusão",
-            "Localização",
+            AuditActions.Delete,
+            AuditEntityTypes.Location,
             locationId,
             locationName,
             "Localização removida.");
