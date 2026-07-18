@@ -30,10 +30,21 @@ Use **Environments** do GitHub (`Settings → Environments`): crie `staging` e `
 
 | Variable | Descrição | Exemplo staging | Exemplo production |
 | --- | --- | --- | --- |
-| `API_BASE_URL` | URL pública da API, embutida no build do frontend (`VITE_API_BASE_URL`) | `https://api-staging.exemplo.com` | `https://api.exemplo.com` |
-| `APP_ORIGIN` | Origin do frontend, usado no CORS do backend (`AllowedOrigins__0`) | `https://staging.exemplo.com` | `https://app.exemplo.com` |
+| `API_BASE_URL` | URL pública da API, embutida no build do frontend (`VITE_API_BASE_URL`) | `https://api.staging.slt18bbm.com.br` | `https://api.slt18bbm.com.br` |
+| `APP_ORIGIN` | Origin do frontend, usado no CORS do backend (`AllowedOrigins__0`) | `https://staging.slt18bbm.com.br` | `https://slt18bbm.com.br` |
 
 > Sem domínio/HTTPS ainda? Use `http://<IP-da-EC2>:8080` como `API_BASE_URL` e `http://<IP-da-EC2>` como `APP_ORIGIN`.
+
+O domínio do projeto é `slt18bbm.com.br` (registro.br). Registros DNS necessários, todos do tipo `A`, apontando para o IP público da EC2 de cada ambiente:
+
+| Registro | Ambiente | Serve |
+| --- | --- | --- |
+| `slt18bbm.com.br` (e `www`) | production | Frontend |
+| `api.slt18bbm.com.br` | production | Backend |
+| `staging.slt18bbm.com.br` | staging | Frontend |
+| `api.staging.slt18bbm.com.br` | staging | Backend |
+
+Alterou `API_BASE_URL`? É preciso **rebuildar** a imagem do frontend (a URL é embutida no build) — re-execute o pipeline completo, não só o job de deploy.
 
 ### Formato da `DB_CONNECTION_STRING` (Npgsql + RDS)
 

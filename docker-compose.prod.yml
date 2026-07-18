@@ -13,13 +13,15 @@ services:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT}
       Database__Provider: PostgreSQL
       ConnectionStrings__DefaultConnection: ${DB_CONNECTION_STRING}
-      Storage__Provider: Local
-      Storage__LocalPath: /app/Data/images
+      Storage__Provider: S3
+      Storage__S3__Bucket: ${AWS_S3_BUCKET_NAME}
+      Storage__S3__Region: ${AWS_REGION}
+      Storage__S3__AccessKey: ${AWS_ACCESS_KEY_ID}
+      Storage__S3__SecretKey: ${AWS_SECRET_ACCESS_KEY}
+      Storage__S3__KeyPrefix: ${AWS_S3_KEY_PREFIX:-}
       AllowedOrigins__0: ${ALLOWED_ORIGIN}
     ports:
       - "8080:8080"
-    volumes:
-      - backend_images:/app/Data/images
 
   frontend:
     image: ghcr.io/${IMAGE_REPO}/frontend:${IMAGE_TAG}
@@ -29,6 +31,3 @@ services:
       - "80:8080"
     depends_on:
       - backend
-
-volumes:
-  backend_images:
