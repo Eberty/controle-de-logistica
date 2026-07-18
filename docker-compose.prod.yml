@@ -1,0 +1,34 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  backend:
+    image: ghcr.io/${IMAGE_REPO}/backend:${IMAGE_TAG}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT}
+      Database__Provider: PostgreSQL
+      ConnectionStrings__DefaultConnection: ${DB_CONNECTION_STRING}
+      Storage__Provider: Local
+      Storage__LocalPath: /app/Data/images
+      AllowedOrigins__0: ${ALLOWED_ORIGIN}
+    ports:
+      - "8080:8080"
+    volumes:
+      - backend_images:/app/Data/images
+
+  frontend:
+    image: ghcr.io/${IMAGE_REPO}/frontend:${IMAGE_TAG}
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "80:8080"
+    depends_on:
+      - backend
+
+volumes:
+  backend_images:
