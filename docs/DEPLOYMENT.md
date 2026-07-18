@@ -3,7 +3,7 @@
 A aplicação é buildada pelo GitHub Actions, publicada no GitHub Container Registry (GHCR) e implantada em uma instância EC2 via SSH usando `docker-compose.prod.yml`. O banco de dados roda no Amazon RDS (PostgreSQL) e **não** faz parte do compose de produção.
 
 | Ambiente | Trigger | Workflow |
-|---|---|---|
+| --- | --- | --- |
 | Staging | `push` na branch `develop` | `.github/workflows/deploy-staging.yml` |
 | Production | Manual (`workflow_dispatch`) ou tag `v*` | `.github/workflows/deploy-production.yml` |
 
@@ -18,46 +18,68 @@ Use **Environments** do GitHub (`Settings → Environments`): crie `staging` e `
 ### Secrets (por ambiente)
 
 | Secret | Descrição | Exemplo |
-|---|---|---|
+| --- | --- | --- |
 | `EC2_HOST` | IP público ou DNS da instância EC2 | `54.203.10.25` |
-| `EC2_USER` | Usuário SSH da instância | `ubuntu` |
+| `EC2_USER` | Usuário SSH da instância | `ec2-user` |
 | `EC2_SSH_KEY` | Chave **privada** SSH (conteúdo completo do arquivo, incluindo `-----BEGIN...` e `-----END...`) | conteúdo de `github-actions-deploy` |
 | `DB_CONNECTION_STRING` | Connection string completa do RDS | ver abaixo |
-| `GHCR_USERNAME` | Usuário GitHub dono do PAT usado pela EC2 para puxar imagens | `eberty-alves` |
+| `GHCR_USERNAME` | Usuário GitHub dono do PAT usado pela EC2 para puxar imagens | `eberty` |
 | `GHCR_PAT` | Personal Access Token com escopo `read:packages` | `ghp_xxx...` |
 
 ### Variables (por ambiente)
 
 | Variable | Descrição | Exemplo staging | Exemplo production |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `API_BASE_URL` | URL pública da API, embutida no build do frontend (`VITE_API_BASE_URL`) | `https://api-staging.exemplo.com` | `https://api.exemplo.com` |
 | `APP_ORIGIN` | Origin do frontend, usado no CORS do backend (`AllowedOrigins__0`) | `https://staging.exemplo.com` | `https://app.exemplo.com` |
 
 > Sem domínio/HTTPS ainda? Use `http://<IP-da-EC2>:8080` como `API_BASE_URL` e `http://<IP-da-EC2>` como `APP_ORIGIN`.
 
-### Formato da `DB_CONNECTION_STRING` (Npgsql)
+### Formato da `DB_CONNECTION_STRING` (Npgsql + RDS)
 
-```
-Host=meu-banco.abc123xyz.us-east-1.rds.amazonaws.com;Port=5432;Database=asset_management;Username=asset;Password=SENHA_FORTE_AQUI;Ssl Mode=Require
+```text
+Host=meu-banco.abc123xyz.us-east-2.rds.amazonaws.com;Port=5432;Database=asset_management;Username=asset;Password=SENHA_FORTE_AQUI;Ssl Mode=Require;Trust Server Certificate=true
 ```
 
 Pontos de atenção:
+
+- A string é um conjunto de pares `chave=valor` separados por `;` e **precisa começar com `Host=`**. Sem o `Host=`, o Npgsql trata o endpoint como nome de parâmetro e o backend crasha na inicialização com `KeyNotFoundException`.
+- **TLS com RDS:** o certificado do RDS é assinado pela CA própria da Amazon, que não existe no trust store da imagem Alpine. Como o Npgsql (6+) valida o certificado com `Ssl Mode=Require`, é obrigatório o `Trust Server Certificate=true` — a conexão continua criptografada, apenas sem validar o emissor (risco aceitável dentro da VPC). Para validação completa, use `Ssl Mode=VerifyFull;Root Certificate=/app/rds-bundle.pem` e adicione ao Dockerfile do backend o download do bundle: `https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem`.
+- **Banco dedicado:** o RDS cria por padrão apenas o banco administrativo `postgres`. Usá-lo funciona (o backend cria as tabelas automaticamente no primeiro boot), mas o ideal é um banco próprio, criado uma única vez a partir da EC2:
+
+  ```bash
+  sudo dnf install -y postgresql16
+  psql -h ENDPOINT_DO_RDS -U USUARIO_MASTER -d postgres -c "CREATE DATABASE asset_management;"
+  ```
+
 - A senha **nunca** aparece no código nem nos logs: ela vive apenas na Secret e no `.env` gerado na EC2 (com permissão `600`).
-- O `.env` é interpolado pelo Docker Compose. Se a senha contiver o caractere `$`, escape-o como `$$` dentro da Secret, ou evite `$` na senha.
-- `Ssl Mode=Require` é o mínimo recomendado para RDS. Para validação completa do certificado, use `Ssl Mode=VerifyFull` e instale o bundle de CAs do RDS na imagem.
+- O `.env` é interpolado pelo Docker Compose. Se a senha contiver o caractere `$`, escape-o como `$$` dentro da Secret, ou evite `$` na senha. O caractere `#` é seguro.
+- Mudou a Secret? O valor só chega na EC2 no próximo deploy — re-execute o workflow após qualquer alteração.
 
 ---
 
-## 2. Configuração da EC2 (Ubuntu)
+## 2. Configuração da EC2 (Amazon Linux 2023)
 
-### 2.1 Instalar Docker
+### 2.1 Instalar Docker e o plugin Compose
 
 ```bash
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker ubuntu
+sudo dnf install -y docker
+sudo systemctl enable --now docker
+sudo usermod -aG docker ec2-user
 newgrp docker
+```
+
+O Amazon Linux 2023 não distribui o plugin do Compose via `dnf`. Instale o binário oficial, que resolve a arquitetura da instância (`x86_64` ou `aarch64`/Graviton) automaticamente:
+
+```bash
+mkdir -p ~/.docker/cli-plugins
+curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+  -o ~/.docker/cli-plugins/docker-compose
+chmod +x ~/.docker/cli-plugins/docker-compose
 docker compose version
 ```
+
+> Se `docker compose` reclamar de `exec format error`, o binário baixado não corresponde à arquitetura da instância — remova `~/.docker/cli-plugins/docker-compose` e repita o download com o comando acima.
 
 ### 2.2 Criar o diretório da aplicação
 
@@ -87,7 +109,7 @@ chmod 600 ~/.ssh/authorized_keys
 Teste da sua máquina e depois cadastre a chave **privada** na Secret `EC2_SSH_KEY`:
 
 ```bash
-ssh -i ~/.ssh/github-actions-deploy ubuntu@SEU_IP_EC2 "docker ps"
+ssh -i ~/.ssh/github-actions-deploy ec2-user@SEU_IP_EC2 "docker ps"
 cat ~/.ssh/github-actions-deploy
 ```
 
@@ -114,13 +136,14 @@ Crie dois Security Groups na mesma VPC:
 ### SG da aplicação (`sg-app`, anexado à EC2)
 
 | Regra | Porta | Origem | Motivo |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Inbound | 80 (e 443 se tiver TLS) | `0.0.0.0/0` | Frontend público |
 | Inbound | 8080 | `0.0.0.0/0` | API (só enquanto o navegador acessar a API direto pela porta; atrás de um reverse proxy/ALB, feche) |
 | Inbound | 22 | **seu IP** (`x.x.x.x/32`) | Administração SSH |
 | Outbound | tudo | `0.0.0.0/0` | Pull de imagens, RDS, updates |
 
 Sobre o SSH do GitHub Actions: os runners não têm IP fixo. Opções, da mais simples à mais robusta:
+
 - Liberar a porta 22 temporariamente e restringir depois;
 - Atualizar a regra com os ranges publicados em `https://api.github.com/meta` (chave `actions`) — são muitos e mudam;
 - **Recomendado a médio prazo:** um step no pipeline que usa a AWS CLI para adicionar o IP do runner ao SG antes do deploy e removê-lo depois, ou usar AWS SSM Session Manager e eliminar o SSH público.
@@ -128,7 +151,7 @@ Sobre o SSH do GitHub Actions: os runners não têm IP fixo. Opções, da mais s
 ### SG do banco (`sg-db`, anexado ao RDS)
 
 | Regra | Porta | Origem | Motivo |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Inbound | 5432 | **`sg-app`** (o Security Group, não um IP) | Apenas a EC2 alcança o banco |
 
 Usar o *ID do Security Group* como origem é o ponto-chave: qualquer instância com o `sg-app` anexado acessa o banco, e nada mais — nem mesmo outros hosts da VPC.
