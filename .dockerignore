@@ -1,0 +1,14 @@
+**/node_modules
+**/bin
+**/obj
+**/dist
+**/.git
+**/.vs
+**/.DS_Store
+**/Dockerfile
+backend/Data/*.db
+backend/Data/*.db-*
+backend/Data/images
+docker-compose.yml
+DOCKER.md
+README.md
