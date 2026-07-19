@@ -32,6 +32,8 @@ Use **Environments** do GitHub (`Settings → Environments`): crie `staging` e `
 | --- | --- | --- | --- |
 | `API_BASE_URL` | URL pública da API, embutida no build do frontend (`VITE_API_BASE_URL`) | `https://api.staging.slt18bbm.com.br` | `https://api.slt18bbm.com.br` |
 | `APP_ORIGIN` | Origin do frontend, usado no CORS do backend (`AllowedOrigins__0`) | `https://staging.slt18bbm.com.br` | `https://slt18bbm.com.br` |
+| `FRONTEND_HOST` | Hostname (sem esquema) servido pelo Nginx para o frontend | `staging.slt18bbm.com.br` | `slt18bbm.com.br` |
+| `API_HOST` | Hostname (sem esquema) servido pelo Nginx para a API | `api.staging.slt18bbm.com.br` | `api.slt18bbm.com.br` |
 
 > Sem domínio/HTTPS ainda? Use `http://<IP-da-EC2>:8080` como `API_BASE_URL` e `http://<IP-da-EC2>` como `APP_ORIGIN`.
 
@@ -148,9 +150,10 @@ Crie dois Security Groups na mesma VPC:
 
 | Regra | Porta | Origem | Motivo |
 | --- | --- | --- | --- |
-| Inbound | 80 (e 443 se tiver TLS) | `0.0.0.0/0` | Frontend público |
-| Inbound | 8080 | `0.0.0.0/0` | API (só enquanto o navegador acessar a API direto pela porta; atrás de um reverse proxy/ALB, feche) |
+| Inbound | 80 | **ranges do Cloudflare** (prefix list) | Todo o tráfego (frontend e API) via Nginx; HTTPS terminado no Cloudflare |
 | Inbound | 22 | **seu IP** (`x.x.x.x/32`) | Administração SSH |
+
+> As portas 8080 e 443 **não** devem ser expostas: com o reverse proxy atrás do Cloudflare (ver [NGINX_HTTPS.md](NGINX_HTTPS.md)), frontend e backend só existem na rede interna do Docker e a origem só fala HTTP na 80. Se regras antigas existirem, remova-as.
 | Outbound | tudo | `0.0.0.0/0` | Pull de imagens, RDS, updates |
 
 Sobre o SSH do GitHub Actions: os runners não têm IP fixo. Opções, da mais simples à mais robusta:

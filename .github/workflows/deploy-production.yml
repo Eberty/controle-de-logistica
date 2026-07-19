@@ -81,13 +81,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Copy compose file to EC2
+      - name: Copy compose and nginx files to EC2
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: docker-compose.prod.yml
+          source: docker-compose.prod.yml,nginx
           target: app
 
       - name: Deploy containers on EC2
@@ -112,6 +112,8 @@ jobs:
             AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
             AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
             AWS_S3_KEY_PREFIX=${{ vars.AWS_S3_KEY_PREFIX }}
+            FRONTEND_HOST=${{ vars.FRONTEND_HOST }}
+            API_HOST=${{ vars.API_HOST }}
             ENVEOF
             chmod 600 .env
             docker compose -f docker-compose.prod.yml --env-file .env pull
