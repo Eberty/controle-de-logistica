@@ -21,6 +21,7 @@ public static class AuditEntityTypes
     public const string User = "Usuário";
     public const string Calendar = "Calendário";
     public const string Mural = "Mural";
+    public const string NoteTag = "Etiqueta";
 }
 
 public static class AuditActions
@@ -31,4 +32,6 @@ public static class AuditActions
     public const string Transfer = "Transferência";
     public const string Publish = "Publicação";
     public const string Remove = "Remoção";
+    public const string Send = "Envio";
+    public const string Complete = "Conclusão";
 }

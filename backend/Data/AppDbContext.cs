@@ -10,6 +10,8 @@ public class AppDbContext : DbContext
     public DbSet<Movement> Movements => Set<Movement>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<UserNote> UserNotes => Set<UserNote>();
+    public DbSet<UserNoteRecipient> UserNoteRecipients => Set<UserNoteRecipient>();
+    public DbSet<NoteTag> NoteTags => Set<NoteTag>();
     public DbSet<LocationOption> LocationOptions => Set<LocationOption>();
     public DbSet<CalendarEntry> CalendarEntries => Set<CalendarEntry>();
 
@@ -24,11 +26,15 @@ public class AppDbContext : DbContext
         {
             modelBuilder.Entity<User>().Property(u => u.Username).UseCollation("NOCASE");
             modelBuilder.Entity<LocationOption>().Property(l => l.Name).UseCollation("NOCASE");
+            modelBuilder.Entity<NoteTag>().Property(t => t.Name).UseCollation("NOCASE");
         }
 
         modelBuilder.Entity<User>().HasIndex(u => u.Username).IsUnique();
         modelBuilder.Entity<LocationOption>().HasIndex(l => l.Name).IsUnique();
         modelBuilder.Entity<UserNote>().HasIndex(n => n.UserId);
+        modelBuilder.Entity<UserNoteRecipient>().HasIndex(r => new { r.NoteId, r.UserId }).IsUnique();
+        modelBuilder.Entity<UserNoteRecipient>().HasIndex(r => r.UserId);
+        modelBuilder.Entity<NoteTag>().HasIndex(t => t.Name).IsUnique();
         modelBuilder.Entity<Movement>().HasIndex(m => m.ItemId);
         modelBuilder.Entity<Movement>().HasIndex(m => m.DestinationItemId);
         modelBuilder.Entity<AuditLog>().HasIndex(a => new { a.ActorUserId, a.EntityType, a.EntityId });

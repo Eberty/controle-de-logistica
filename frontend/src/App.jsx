@@ -12,25 +12,32 @@ import {
 } from "./api";
 import { Icon } from "./components/Icon";
 import { NumberInput } from "./components/NumberInput";
+import { SeiLink } from "./components/SeiLink";
 import { TagList } from "./components/TagList";
 import {
   emptyCalendarForm,
   emptyCalendarSearch,
   emptyInventoryFilters,
   emptyItemForm,
+  emptyMural,
+  emptyMuralSummary,
   emptyNoteForm,
+  emptyNoteTagForm,
   emptyTransferForm,
   itemConditionOptions,
   itemNatureOptions,
   locationOptions,
+  permanentNature,
 } from "./constants";
+import { splitTags, tagColorKey, tagStyle } from "./tags";
 
 const auditPageSize = 100;
 const auditTimelineLimit = 5000;
 const inventoryPageSize = 20;
+const muralSummaryPollMs = 30000;
 const INVENTORY_COLUMNS = [
   { key: "quantity", label: "Quantidade" },
-  { key: "assetTag", label: "Tombo" },
+  { key: "assetTag", label: "Patrimônio" },
   { key: "nature", label: "Natureza" },
   { key: "location", label: "Localização" },
   { key: "condition", label: "Conservação" },
@@ -39,6 +46,7 @@ const INVENTORY_COLUMNS = [
   { key: "photo", label: "Foto" },
 ];
 const INVENTORY_COLUMNS_LS_KEY = "ams_inventory_columns";
+const MURAL_TAB_LS_KEY = "ams_mural_tab";
 const VIEW_TITLES = {
   items: "Cadastro de itens",
   search: "Inventário",
@@ -69,6 +77,11 @@ const emptyManagedUserForm = {
   currentPassword: "",
   password: "",
   adminPassword: "",
+};
+
+const emptyAuthForm = {
+  username: "",
+  password: "",
 };
 
 const emptyRegisterForm = {
@@ -172,6 +185,45 @@ function itemMatchesInventoryFilters(item, filters) {
   const matchesResponsible = !responsibleFilter || normalizeFilterText(item.responsiblePerson).includes(responsibleFilter);
 
   return matchesName && matchesAssetTag && matchesCondition && matchesNature && matchesLocation && matchesResponsible;
+}
+
+function groupNotesBy(entries, getKey, getName) {
+  const groups = new Map();
+  entries.forEach((entry) => {
+    const key = getKey(entry);
+    if (!groups.has(key)) groups.set(key, { key, name: getName(entry), entries: [] });
+    groups.get(key).entries.push(entry);
+  });
+  return [...groups.values()].sort((first, second) => compareText(first.name, second.name));
+}
+
+function compareText(first, second) {
+  return String(first ?? "").localeCompare(String(second ?? ""), "pt-BR", { sensitivity: "base", numeric: true });
+}
+
+function conditionRank(condition) {
+  const index = itemConditionOptions.indexOf(condition);
+  return index < 0 ? itemConditionOptions.length : index;
+}
+
+const inventorySortComparators = {
+  name: (first, second) => compareText(first.name, second.name),
+  location: (first, second) => compareText(first.location, second.location),
+  condition: (first, second) => conditionRank(first.condition) - conditionRank(second.condition),
+};
+
+function filterInventoryItems(items, filters, sort) {
+  const filtered = items.filter((item) => itemMatchesInventoryFilters(item, filters));
+  const comparator = inventorySortComparators[sort.key];
+  if (!comparator) return filtered;
+
+  const direction = sort.direction === "desc" ? -1 : 1;
+  return filtered.sort(
+    (first, second) =>
+      direction * comparator(first, second) ||
+      compareText(first.name, second.name) ||
+      compareText(first.location, second.location),
+  );
 }
 
 function createDefaultAuditRange() {
@@ -293,10 +345,7 @@ function App() {
   const [requiresInitialAdmin, setRequiresInitialAdmin] = useState(false);
   const [authMode, setAuthMode] = useState("login");
   const [initialAdminForm, setInitialAdminForm] = useState({ password: "" });
-  const [authForm, setAuthForm] = useState({
-    username: "",
-    password: "",
-  });
+  const [authForm, setAuthForm] = useState(emptyAuthForm);
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
   const [authError, setAuthError] = useState("");
   const [authSuccess, setAuthSuccess] = useState("");
@@ -314,7 +363,21 @@ function App() {
   const [noteForm, setNoteForm] = useState(emptyNoteForm);
   const [editingNoteId, setEditingNoteId] = useState(null);
   const [noteEditReturnView, setNoteEditReturnView] = useState(null);
-  const [muralNotes, setMuralNotes] = useState([]);
+  const [muralNotes, setMuralNotes] = useState(emptyMural);
+  const [muralTab, setMuralTab] = useState(() => {
+    try {
+      return localStorage.getItem(MURAL_TAB_LS_KEY) === "sent" ? "sent" : "received";
+    } catch {
+      return "received";
+    }
+  });
+  const [muralSummary, setMuralSummary] = useState(emptyMuralSummary);
+  const [openedReceivedNoteIds, setOpenedReceivedNoteIds] = useState([]);
+  const [pendingCompletionNote, setPendingCompletionNote] = useState(null);
+  const [pendingTagDeletion, setPendingTagDeletion] = useState(null);
+  const [noteTags, setNoteTags] = useState([]);
+  const [noteTagForm, setNoteTagForm] = useState(emptyNoteTagForm);
+  const [noteRecipientOptions, setNoteRecipientOptions] = useState([]);
   const [calendarEntries, setCalendarEntries] = useState([]);
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -330,6 +393,7 @@ function App() {
   const [calendarSearch, setCalendarSearch] = useState(emptyCalendarSearch);
   const [inventoryFilters, setInventoryFilters] = useState(emptyInventoryFilters);
   const [inventoryPage, setInventoryPage] = useState(1);
+  const [inventorySort, setInventorySort] = useState({ key: null, direction: "asc" });
   const [visibleColumns, setVisibleColumns] = useState(() => {
     try {
       const saved = localStorage.getItem(INVENTORY_COLUMNS_LS_KEY);
@@ -369,6 +433,7 @@ function App() {
   const [conditionForm, setConditionForm] = useState({ condition: "" });
   const keepScrollAtBottomRef = useRef(false);
   const toastTimeoutsRef = useRef(new Map());
+  const muralSummaryRef = useRef(emptyMuralSummary);
   const adminSettingsRef = useRef(null);
   const itemPhotoObjectUrlsRef = useRef(new Map());
   const photoInputRef = useRef(null);
@@ -646,18 +711,25 @@ function App() {
         setCustomLocations(locationResponse);
 
         try {
-          const [muralResponse, calendarResponse] = await Promise.all([
+          const [muralResponse, calendarResponse, summaryResponse, tagsResponse, recipientsResponse] = await Promise.all([
             request("/api/mural", { token }),
             request("/api/calendar", { token }),
+            request("/api/mural/summary", { token }),
+            request("/api/note-tags", { token }),
+            request("/api/mural/recipients", { token }),
           ]);
 
           if (active) {
             setMuralNotes(muralResponse);
             setCalendarEntries(calendarResponse);
+            setMuralSummary(summaryResponse);
+            muralSummaryRef.current = summaryResponse;
+            setNoteTags(tagsResponse);
+            setNoteRecipientOptions(recipientsResponse);
           }
         } catch {
           if (active) {
-            setMuralNotes([]);
+            setMuralNotes(emptyMural);
             setCalendarEntries([]);
           }
         }
@@ -691,6 +763,56 @@ function App() {
     };
   }, [token]);
 
+  const hasUnseenCompletionsOnScreen =
+    activeView === "mural" && muralTab === "sent" && muralSummary.unseenCompletions > 0;
+
+  useEffect(() => {
+    if (!token || !hasUnseenCompletionsOnScreen) return;
+
+    // The cards keep their "Pronto" highlight until the mural is loaded again.
+    request("/api/mural/sent/seen", { token, method: "POST" })
+      .then(() => request("/api/mural/summary", { token }))
+      .then((summaryResponse) => {
+        setMuralSummary(summaryResponse);
+        muralSummaryRef.current = summaryResponse;
+      })
+      .catch(() => {
+        // The next summary check retries.
+      });
+  }, [token, hasUnseenCompletionsOnScreen]);
+
+  useEffect(() => {
+    if (!token || !user) return undefined;
+
+    let cancelled = false;
+    const intervalId = window.setInterval(async () => {
+      try {
+        const summary = await request("/api/mural/summary", { token });
+        if (cancelled) return;
+
+        const previous = muralSummaryRef.current;
+        const hasNewReceived = summary.unreadReceived > previous.unreadReceived;
+        const hasNewCompletion = summary.unseenCompletions > previous.unseenCompletions;
+        muralSummaryRef.current = summary;
+        setMuralSummary(summary);
+
+        if (hasNewReceived) setMessage("Você recebeu uma nova anotação no Mural.", "success");
+        if (hasNewCompletion) setMessage("Uma anotação enviada por você foi marcada como pronta.", "success");
+        if (hasNewReceived || hasNewCompletion) {
+          const muralResponse = await request("/api/mural", { token });
+          if (!cancelled) setMuralNotes(muralResponse);
+        }
+      } catch {
+        // Keep the current counters when the background check fails.
+      }
+    }, muralSummaryPollMs);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [token, user]);
+
   useEffect(
     () => () => {
       toastTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -722,7 +844,7 @@ function App() {
     let cancelled = false;
     const itemsById = new Map(items.map((item) => [item.id, item]));
 
-    const filtered = items.filter((item) => itemMatchesInventoryFilters(item, inventoryFilters));
+    const filtered = filterInventoryItems(items, inventoryFilters, inventorySort);
     const totalPages = Math.max(1, Math.ceil(filtered.length / inventoryPageSize));
     const page = Math.min(inventoryPage, totalPages);
     const visibleIds = new Set(
@@ -782,7 +904,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [items, token, inventoryFilters, inventoryPage, editingItemId, focusedItemId]);
+  }, [items, token, inventoryFilters, inventorySort, inventoryPage, editingItemId, focusedItemId]);
 
   useEffect(() => {
     if (!adminSettingsOpen) return undefined;
@@ -865,17 +987,24 @@ function App() {
     setCustomLocations(locationResponse);
 
     try {
-      const [muralResponse, calendarResponse] = await Promise.all([
+      const [muralResponse, calendarResponse, summaryResponse, tagsResponse, recipientsResponse] = await Promise.all([
         request("/api/mural", { token: currentToken }),
         request("/api/calendar", { token: currentToken }),
+        request("/api/mural/summary", { token: currentToken }),
+        request("/api/note-tags", { token: currentToken }),
+        request("/api/mural/recipients", { token: currentToken }),
       ]);
       if (!isStale()) {
         setMuralNotes(muralResponse);
         setCalendarEntries(calendarResponse);
+        setMuralSummary(summaryResponse);
+        muralSummaryRef.current = summaryResponse;
+        setNoteTags(tagsResponse);
+        setNoteRecipientOptions(recipientsResponse);
       }
     } catch {
       if (!isStale()) {
-        setMuralNotes([]);
+        setMuralNotes(emptyMural);
         setCalendarEntries([]);
       }
     }
@@ -1035,6 +1164,7 @@ function App() {
     localStorage.removeItem(TOKEN_KEY);
     setToken("");
     setUser(null);
+    setAuthForm(emptyAuthForm);
     setItems([]);
     setCustomLocations([]);
     setNewLocationForm(emptyLocationForm);
@@ -1044,7 +1174,15 @@ function App() {
     setNoteForm(emptyNoteForm);
     setEditingNoteId(null);
     setNoteEditReturnView(null);
-    setMuralNotes([]);
+    setMuralNotes(emptyMural);
+    setMuralSummary(emptyMuralSummary);
+    muralSummaryRef.current = emptyMuralSummary;
+    setOpenedReceivedNoteIds([]);
+    setPendingCompletionNote(null);
+    setPendingTagDeletion(null);
+    setNoteTags([]);
+    setNoteTagForm(emptyNoteTagForm);
+    setNoteRecipientOptions([]);
     setCalendarEntries([]);
     resetCalendarUi();
     setEditingItemId(null);
@@ -1348,6 +1486,15 @@ function App() {
 
   async function handleSaveItem(event) {
     event.preventDefault();
+
+    const assetTag = itemForm.nature === permanentNature ? itemForm.assetTag.trim() : "";
+    const editingItem = items.find((item) => item.id === editingItemId);
+    const assetTagChanged = !editingItem || editingItem.assetTag !== assetTag;
+    if (assetTag && assetTagChanged && items.some((item) => item.assetTag === assetTag && item.id !== editingItemId)) {
+      setMessage(`Já existe um item cadastrado com o patrimônio ${assetTag}.`);
+      return;
+    }
+
     setBusy(true);
     setMessage("");
 
@@ -1355,7 +1502,7 @@ function App() {
       const payload = {
         name: itemForm.name,
         quantity: Number(itemForm.quantity),
-        assetTag: itemForm.assetTag,
+        assetTag,
         nature: itemForm.nature,
         location: itemForm.location,
         condition: itemForm.condition,
@@ -1392,7 +1539,7 @@ function App() {
       if (wasEditingItem) {
         setActiveView("search");
         if (savedItem && Array.isArray(freshItems)) {
-          const filtered = freshItems.filter((item) => itemMatchesInventoryFilters(item, inventoryFilters));
+          const filtered = filterInventoryItems(freshItems, inventoryFilters, inventorySort);
           const itemIndex = filtered.findIndex((item) => item.id === savedItem.id);
           if (itemIndex >= 0) {
             setInventoryPage(Math.floor(itemIndex / inventoryPageSize) + 1);
@@ -1629,7 +1776,117 @@ function App() {
   }
 
   async function loadMural(currentToken = token) {
-    await loadInto("/api/mural", setMuralNotes, currentToken);
+    const [muralResponse, summaryResponse] = await Promise.all([
+      request("/api/mural", { token: currentToken }),
+      request("/api/mural/summary", { token: currentToken }),
+    ]);
+    setMuralNotes(muralResponse);
+    setMuralSummary(summaryResponse);
+    muralSummaryRef.current = summaryResponse;
+  }
+
+  async function handleOpenReceivedNote(receivedNote) {
+    setOpenedReceivedNoteIds((current) =>
+      current.includes(receivedNote.id) ? current : [...current, receivedNote.id],
+    );
+    if (receivedNote.readAt) return;
+
+    try {
+      await request(`/api/mural/${receivedNote.id}/read`, { token, method: "POST" });
+      await loadMural();
+    } catch (error) {
+      handleRequestError(error);
+    }
+  }
+
+  async function handleCompleteReceivedNote(receivedNote) {
+    setBusy(true);
+    setMessage("");
+
+    try {
+      await request(`/api/mural/${receivedNote.id}/done`, { token, method: "POST" });
+      setPendingCompletionNote(null);
+      setMessage("Anotação devolvida ao remetente como pronta.", "success");
+      await loadMural();
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleSelectMuralTab(tab) {
+    setMuralTab(tab);
+    try {
+      localStorage.setItem(MURAL_TAB_LS_KEY, tab);
+    } catch {
+      // The tab is only a convenience; keep working when storage is unavailable.
+    }
+  }
+
+  function toggleNoteTag(tagName) {
+    setNoteForm((current) => {
+      const selected = current.tags.some((tag) => tagColorKey(tag) === tagColorKey(tagName));
+      return {
+        ...current,
+        tags: selected
+          ? current.tags.filter((tag) => tagColorKey(tag) !== tagColorKey(tagName))
+          : [...current.tags, tagName],
+      };
+    });
+  }
+
+  function toggleNoteRecipient(userId) {
+    setNoteForm((current) => ({
+      ...current,
+      recipientUserIds: current.recipientUserIds.includes(userId)
+        ? current.recipientUserIds.filter((id) => id !== userId)
+        : [...current.recipientUserIds, userId],
+    }));
+  }
+
+  async function handleDeleteNoteTag(tag) {
+    setBusy(true);
+    setMessage("");
+
+    try {
+      await request(`/api/note-tags/${tag.id}`, { token, method: "DELETE" });
+      setNoteTags((current) => current.filter((item) => item.id !== tag.id));
+      setPendingTagDeletion(null);
+      setMessage("Etiqueta excluída.", "success");
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateNoteTag() {
+    const name = noteTagForm.name.trim();
+    if (!name) {
+      setMessage("Informe o nome da etiqueta.");
+      return;
+    }
+
+    setNoteTagForm((current) => ({ ...current, saving: true }));
+    setMessage("");
+
+    try {
+      const createdTag = await request("/api/note-tags", {
+        token,
+        method: "POST",
+        body: { name, color: noteTagForm.color },
+      });
+      setNoteTags((current) =>
+        [...current, createdTag].sort((first, second) => compareText(first.name, second.name)),
+      );
+      setNoteForm((current) => ({ ...current, tags: [...current.tags, createdTag.name] }));
+      setNoteTagForm(emptyNoteTagForm);
+      setMessage("Etiqueta cadastrada.", "success");
+    } catch (error) {
+      setNoteTagForm((current) => ({ ...current, saving: false }));
+      handleRequestError(error);
+    }
   }
 
   async function loadCalendar(currentToken = token) {
@@ -1646,7 +1903,8 @@ function App() {
         title: noteForm.title,
         content: noteForm.content,
         tags: noteForm.tags,
-        isPublic: noteForm.isPublic,
+        seiNumber: noteForm.seiNumber,
+        recipientUserIds: noteForm.recipientUserIds,
       };
 
       await request(editingNoteId ? `/api/me/notes/${editingNoteId}` : "/api/me/notes", {
@@ -1656,6 +1914,7 @@ function App() {
       });
       setMessage(editingNoteId ? "Anotação atualizada." : "Anotação criada.", "success");
       setNoteForm(emptyNoteForm);
+      setNoteTagForm(emptyNoteTagForm);
       setEditingNoteId(null);
       if (editingNoteId && noteEditReturnView) {
         setActiveView(noteEditReturnView);
@@ -1675,8 +1934,9 @@ function App() {
     setNoteForm({
       title: noteItem.title ?? "",
       content: noteItem.content ?? "",
-      tags: noteItem.tags ?? "",
-      isPublic: Boolean(noteItem.isPublic),
+      tags: splitTags(noteItem.tags),
+      seiNumber: noteItem.seiNumber ?? "",
+      recipientUserIds: (noteItem.recipients ?? []).map((recipient) => recipient.userId),
     });
   }
 
@@ -1778,7 +2038,7 @@ function App() {
             </p>
           )}
           <p>
-            <strong>Número do SEI:</strong> {entry.seiNumber?.trim() || "-"}
+            <strong>Número do SEI:</strong> {entry.seiNumber?.trim() ? <SeiLink number={entry.seiNumber} /> : "-"}
           </p>
           <p className="item-notes-display">
             <strong>Observações:</strong> {entry.notes?.trim() || "-"}
@@ -1974,12 +2234,71 @@ function App() {
       title: "Inventário",
       subtitle: `Exportado em ${formatDateTime(new Date().toISOString())}`,
       tableStyle: "table { font-size: 11px; } th:first-child, td:first-child { min-width: 20%; }",
-      columns: ["Item", "Qtd.", "Tombo", "Natureza", "Localização", "Conservação", "Desc."],
+      columns: ["Item", "Qtd.", "Patrimônio", "Natureza", "Localização", "Conservação", "Desc."],
       rows,
       emptyMessage: "Nenhum item encontrado.",
     })) {
       setMessage("Não foi possível preparar a exportação em PDF.");
     }
+  }
+
+  function renderConfirmModal({ label, eyebrow, title, text, confirmLabel, onConfirm, onCancel }) {
+    return (
+      <div className="action-modal" role="dialog" aria-modal="true" aria-label={label} onMouseDown={onCancel}>
+        <article
+          className="panel section-card action-modal-card confirm-modal"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <button className="photo-viewer-close action-modal-close" type="button" onClick={onCancel} aria-label="Fechar">
+            ×
+          </button>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">{eyebrow}</p>
+              <h2>{title}</h2>
+            </div>
+          </div>
+          <p className="muted">{text}</p>
+          <div className="button-row">
+            <button className="primary" type="button" disabled={busy} onClick={onConfirm}>
+              {confirmLabel}
+            </button>
+            <button className="ghost" type="button" onClick={onCancel}>
+              Cancelar
+            </button>
+          </div>
+        </article>
+      </div>
+    );
+  }
+
+  function handleInventorySort(key) {
+    setInventorySort((current) => ({
+      key,
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
+    }));
+    setInventoryPage(1);
+  }
+
+  function renderInventorySortHeader(key, label) {
+    const isActive = inventorySort.key === key;
+    const directionLabel = inventorySort.direction === "asc" ? "crescente" : "decrescente";
+
+    return (
+      <th aria-sort={isActive ? (inventorySort.direction === "asc" ? "ascending" : "descending") : "none"}>
+        <button
+          type="button"
+          className={`sort-header${isActive ? " active" : ""}`}
+          onClick={() => handleInventorySort(key)}
+          title={isActive ? `Ordenado por ${label.toLowerCase()} (${directionLabel})` : `Ordenar por ${label.toLowerCase()}`}
+        >
+          {label}
+          <span className="sort-indicator" aria-hidden="true">
+            <Icon type={isActive ? (inventorySort.direction === "asc" ? "sortAsc" : "sortDesc") : "sort"} />
+          </span>
+        </button>
+      </th>
+    );
   }
 
   function handleExportAuditPdf() {
@@ -2034,12 +2353,20 @@ function App() {
   const requiresManagedAdminPassword =
     adminWillPromoteManagedUser || adminWillChangeOtherPassword;
   const hasInventoryFilters = Object.values(inventoryFilters).some(Boolean);
+  const muralPendingCount = muralSummary.unreadReceived + muralSummary.unseenCompletions;
+  const noteTagColors = Object.fromEntries(noteTags.map((tag) => [tagColorKey(tag.name), tag.color]));
+  const receivedNoteGroups = groupNotesBy(muralNotes.received, (note) => note.authorUserId, (note) => note.authorName);
+  const sentNoteGroups = groupNotesBy(
+    muralNotes.sent.flatMap((note) => note.recipients.map((recipient) => ({ note, recipient }))),
+    (entry) => entry.recipient.userId,
+    (entry) => entry.recipient.name,
+  );
   const auditTotalPages = Math.max(1, Math.ceil(auditTimeline.length / auditPageSize));
   const safeAuditPage = Math.min(auditPage, auditTotalPages);
   const paginatedAuditTimeline = auditTimeline.slice((safeAuditPage - 1) * auditPageSize, safeAuditPage * auditPageSize);
   const filteredItems = useMemo(
-    () => items.filter((item) => itemMatchesInventoryFilters(item, inventoryFilters)),
-    [items, inventoryFilters],
+    () => filterInventoryItems(items, inventoryFilters, inventorySort),
+    [items, inventoryFilters, inventorySort],
   );
   const inventoryTotalPages = Math.max(1, Math.ceil(filteredItems.length / inventoryPageSize));
   const safeInventoryPage = Math.min(inventoryPage, inventoryTotalPages);
@@ -2328,6 +2655,11 @@ function App() {
             onClick={() => navigateTo("mural")}
           >
             Mural
+            {muralPendingCount > 0 ? (
+              <span className="nav-badge" aria-label={`${muralPendingCount} novidade(s) no mural`}>
+                {muralPendingCount}
+              </span>
+            ) : null}
           </button>
           <button
             className={activeView === "calendar" ? "active" : ""}
@@ -2628,7 +2960,13 @@ function App() {
                 Natureza
                 <select
                   value={itemForm.nature}
-                  onChange={(event) => setItemForm((current) => ({ ...current, nature: event.target.value }))}
+                  onChange={(event) =>
+                    setItemForm((current) => ({
+                      ...current,
+                      nature: event.target.value,
+                      assetTag: event.target.value === permanentNature ? current.assetTag : "",
+                    }))
+                  }
                   required
                 >
                   <option value="">Selecione</option>
@@ -2639,22 +2977,24 @@ function App() {
                   ))}
                 </select>
               </label>
-              <label>
-                Tombo
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={itemForm.assetTag}
-                  onChange={(event) =>
-                    setItemForm((current) => ({
-                      ...current,
-                      assetTag: event.target.value.replace(/\D/g, ""),
-                    }))
-                  }
-                  placeholder="Informar apenas números"
-                />
-              </label>
+              {itemForm.nature === permanentNature ? (
+                <label>
+                  Patrimônio
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={itemForm.assetTag}
+                    onChange={(event) =>
+                      setItemForm((current) => ({
+                        ...current,
+                        assetTag: event.target.value.replace(/\D/g, ""),
+                      }))
+                    }
+                    placeholder="Informar apenas números"
+                  />
+                </label>
+              ) : null}
               <label>
                 Localização
                 <div className="location-select-row">
@@ -2947,7 +3287,7 @@ function App() {
                   />
                 </label>
                 <label>
-                  Tombo
+                  Patrimônio
                   <input
                     inputMode="numeric"
                     pattern="[0-9]*"
@@ -3029,12 +3369,12 @@ function App() {
             <table>
               <thead>
                 <tr>
-                  <th>Item</th>
+                  {renderInventorySortHeader("name", "Item")}
                   {visibleColumns.includes("quantity") && <th title="Quantidade">Qtd.</th>}
-                  {visibleColumns.includes("assetTag") && <th>Tombo</th>}
+                  {visibleColumns.includes("assetTag") && <th>Patrimônio</th>}
                   {visibleColumns.includes("nature") && <th>Natureza</th>}
-                  {visibleColumns.includes("location") && <th>Localização</th>}
-                  {visibleColumns.includes("condition") && <th>Conservação</th>}
+                  {visibleColumns.includes("location") && renderInventorySortHeader("location", "Localização")}
+                  {visibleColumns.includes("condition") && renderInventorySortHeader("condition", "Conservação")}
                   {visibleColumns.includes("responsible") && <th>Detentor</th>}
                   {visibleColumns.includes("discharged") && (
                     <th className="center-column" title="Descargueado">
@@ -3212,19 +3552,128 @@ function App() {
               required
             />
             <input
-              value={noteForm.tags}
-              maxLength={500}
-              onChange={(event) => setNoteForm((current) => ({ ...current, tags: event.target.value }))}
-              placeholder="Etiquetas separadas por vírgula"
+              value={noteForm.seiNumber}
+              maxLength={100}
+              onChange={(event) => setNoteForm((current) => ({ ...current, seiNumber: event.target.value }))}
+              placeholder="Número do processo ou ofício SEI (opcional)"
             />
-            <label className="checkbox-field">
-              <input
-                type="checkbox"
-                checked={noteForm.isPublic}
-                onChange={(event) => setNoteForm((current) => ({ ...current, isPublic: event.target.checked }))}
-              />
-              Disponibilizar no mural para todos os usuários
-            </label>
+
+            <div className="note-field">
+              <span className="note-field-label">Etiquetas</span>
+              <div className="tag-picker">
+                {noteTags.length === 0 && noteForm.tags.length === 0 ? (
+                  <span className="muted">Nenhuma etiqueta cadastrada.</span>
+                ) : null}
+                {noteForm.tags
+                  .filter((tag) => !noteTags.some((option) => tagColorKey(option.name) === tagColorKey(tag)))
+                  .map((tag) => (
+                    <span key={tag} className="tag-option selected">
+                      <button type="button" className="tag-option-label" aria-pressed onClick={() => toggleNoteTag(tag)}>
+                        {tag}
+                      </button>
+                    </span>
+                  ))}
+                {noteTags.map((tag) => {
+                  const selected = noteForm.tags.some((current) => tagColorKey(current) === tagColorKey(tag.name));
+                  return (
+                    <span
+                      className={`tag-option${selected ? " selected" : ""}`}
+                      style={tagStyle(tag.color)}
+                      key={tag.id}
+                    >
+                      <button
+                        type="button"
+                        className="tag-option-label"
+                        aria-pressed={selected}
+                        onClick={() => toggleNoteTag(tag.name)}
+                      >
+                        {tag.name}
+                      </button>
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          className="tag-remove-button"
+                          onClick={() => setPendingTagDeletion(tag)}
+                          title={`Excluir a etiqueta ${tag.name}`}
+                          aria-label={`Excluir a etiqueta ${tag.name}`}
+                        >
+                          <Icon type="close" />
+                        </button>
+                      ) : null}
+                    </span>
+                  );
+                })}
+                {noteTagForm.open ? null : (
+                  <button
+                    type="button"
+                    className="ghost tag-add-button"
+                    onClick={() => setNoteTagForm((current) => ({ ...current, open: true }))}
+                  >
+                    + Nova etiqueta
+                  </button>
+                )}
+              </div>
+              {noteTagForm.open ? (
+                <div className="tag-create-row">
+                  <input
+                    value={noteTagForm.name}
+                    maxLength={50}
+                    onChange={(event) => setNoteTagForm((current) => ({ ...current, name: event.target.value }))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        handleCreateNoteTag();
+                      }
+                    }}
+                    placeholder="Nome da nova etiqueta"
+                    aria-label="Nome da nova etiqueta"
+                  />
+                  <label className="tag-color-field" title="Cor da etiqueta">
+                    <input
+                      type="color"
+                      value={noteTagForm.color}
+                      onChange={(event) => setNoteTagForm((current) => ({ ...current, color: event.target.value }))}
+                      aria-label="Cor da etiqueta"
+                    />
+                  </label>
+                  {noteTagForm.name.trim() ? (
+                    <span className="tag-preview" style={tagStyle(noteTagForm.color)}>
+                      {noteTagForm.name.trim()}
+                    </span>
+                  ) : null}
+                  <button className="primary" type="button" disabled={noteTagForm.saving} onClick={handleCreateNoteTag}>
+                    Salvar etiqueta
+                  </button>
+                  <button className="ghost" type="button" onClick={() => setNoteTagForm(emptyNoteTagForm)}>
+                    Cancelar
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="note-field">
+              <span className="note-field-label">Destinatários</span>
+              {noteRecipientOptions.length === 0 ? (
+                <span className="muted">Nenhum outro usuário cadastrado.</span>
+              ) : (
+                <div className="recipient-picker">
+                  {noteRecipientOptions.map((option) => (
+                    <label className="checkbox-field" key={option.id}>
+                      <input
+                        type="checkbox"
+                        checked={noteForm.recipientUserIds.includes(option.id)}
+                        onChange={() => toggleNoteRecipient(option.id)}
+                      />
+                      {option.name}
+                    </label>
+                  ))}
+                </div>
+              )}
+              <small className="muted">
+                Sem destinatário, a anotação fica visível só para você. Com destinatários, ela aparece no Mural.
+              </small>
+            </div>
+
             <div className="button-row">
               <button className="primary" type="submit" disabled={busy}>
                 {editingNoteId ? "Salvar anotação" : "Adicionar anotação"}
@@ -3236,6 +3685,7 @@ function App() {
                   onClick={() => {
                     setEditingNoteId(null);
                     setNoteForm(emptyNoteForm);
+                    setNoteTagForm(emptyNoteTagForm);
                     if (noteEditReturnView) {
                       setActiveView(noteEditReturnView);
                     }
@@ -3250,13 +3700,12 @@ function App() {
 
           <div className="card-grid">
             {notes.map((noteItem) => (
-              <article className="content-card" key={noteItem.id}>
+              <article className="content-card note-card" key={noteItem.id}>
                 <div className="card-header">
                   <div>
                     <h3>{noteItem.title}</h3>
                     <small>
-                      {formatDateTime(noteItem.updatedAt)}
-                      {noteItem.isPublic ? " · Publicada no mural" : ""}
+                      Criado por {noteItem.authorName} · {formatDateTime(noteItem.createdAt)}
                     </small>
                   </div>
                   <div className="row-actions">
@@ -3280,8 +3729,20 @@ function App() {
                     </button>
                   </div>
                 </div>
-                <p>{noteItem.content}</p>
-                <TagList tags={noteItem.tags} />
+                <div className="note-meta">
+                  <small>
+                    {noteItem.recipients.length > 0
+                      ? `Enviada para: ${noteItem.recipients.map((recipient) => recipient.name).join(", ")}`
+                      : "Privada (sem destinatários)"}
+                  </small>
+                  {noteItem.seiNumber ? (
+                    <small>
+                      SEI: <SeiLink number={noteItem.seiNumber} />
+                    </small>
+                  ) : null}
+                </div>
+                <p className="item-notes-display">{noteItem.content}</p>
+                <TagList tags={noteItem.tags} colors={noteTagColors} />
               </article>
             ))}
           </div>
@@ -3292,7 +3753,7 @@ function App() {
           <article className="panel section-card">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">Compartilhado</p>
+                <p className="eyebrow">Privado</p>
                 <h2>Mural de anotações</h2>
               </div>
               <div className="section-actions">
@@ -3308,42 +3769,177 @@ function App() {
               </div>
             </div>
 
-            {muralNotes.length === 0 ? (
+            <div className="mural-tabs" role="tablist" aria-label="Anotações do mural">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={muralTab === "sent"}
+                className={muralTab === "sent" ? "active" : ""}
+                onClick={() => handleSelectMuralTab("sent")}
+              >
+                Enviados
+                {muralSummary.unseenCompletions > 0 ? (
+                  <span className="nav-badge">{muralSummary.unseenCompletions}</span>
+                ) : null}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={muralTab === "received"}
+                className={muralTab === "received" ? "active" : ""}
+                onClick={() => handleSelectMuralTab("received")}
+              >
+                Recebidos
+                {muralSummary.unreadReceived > 0 ? (
+                  <span className="nav-badge">{muralSummary.unreadReceived}</span>
+                ) : null}
+              </button>
+            </div>
+
+            {muralTab === "received" ? (
+              receivedNoteGroups.length === 0 ? (
+                <p className="muted wide-text">Nenhuma anotação recebida.</p>
+              ) : (
+                receivedNoteGroups.map((group) => (
+                  <section className="mural-group" key={group.key}>
+                    <h3 className="mural-group-title">
+                      De: {group.name}
+                      <span className="mural-group-count">{group.entries.length}</span>
+                    </h3>
+                    <div className="card-grid">
+                      {group.entries.map((receivedNote) => {
+                        const isOpen = Boolean(receivedNote.readAt) || openedReceivedNoteIds.includes(receivedNote.id);
+                        return (
+                          <article
+                            className={`content-card note-card${receivedNote.readAt ? "" : " unread"}${receivedNote.completedAt ? " completed" : ""}`}
+                            key={receivedNote.id}
+                          >
+                            <div className="card-header">
+                              <div>
+                                <h3>{receivedNote.title}</h3>
+                                <small>
+                                  Criado por {receivedNote.authorName} · {formatDateTime(receivedNote.createdAt)}
+                                </small>
+                              </div>
+                              {receivedNote.completedAt || !receivedNote.readAt ? (
+                                <div className="row-actions">
+                                  {receivedNote.completedAt ? (
+                                    <span className="note-status done">Pronto</span>
+                                  ) : (
+                                    <span className="note-status new">Nova</span>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
+                            {isOpen ? (
+                              <>
+                                {receivedNote.completedAt || receivedNote.seiNumber ? (
+                                  <div className="note-meta">
+                                    {receivedNote.completedAt ? (
+                                      <small>Marcada como pronta em {formatDateTime(receivedNote.completedAt)}</small>
+                                    ) : null}
+                                    {receivedNote.seiNumber ? (
+                                      <small>
+                                        SEI: <SeiLink number={receivedNote.seiNumber} />
+                                      </small>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                <p className="item-notes-display">{receivedNote.content}</p>
+                                <TagList tags={receivedNote.tags} colors={noteTagColors} />
+                                {receivedNote.completedAt ? null : (
+                                  <div className="button-row">
+                                    <button
+                                      className="primary"
+                                      type="button"
+                                      disabled={busy}
+                                      onClick={() => setPendingCompletionNote(receivedNote)}
+                                    >
+                                      Pronto
+                                    </button>
+                                  </div>
+                                )}
+                              </>
+                            ) : (
+                              <div className="button-row">
+                                <button className="primary" type="button" onClick={() => handleOpenReceivedNote(receivedNote)}>
+                                  Abrir anotação
+                                </button>
+                              </div>
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))
+              )
+            ) : sentNoteGroups.length === 0 ? (
               <p className="muted wide-text">
-                Nenhuma anotação publicada no mural.
+                Nenhuma anotação enviada.
                 <br />
-                Para publicar, marque a opção "Disponibilizar no mural" ao salvar uma anotação.
+                Para enviar, escolha os destinatários ao salvar uma anotação.
               </p>
             ) : (
-              <div className="card-grid">
-                {muralNotes.map((muralNote) => (
-                  <article className="content-card" key={muralNote.id}>
-                    <div className="card-header">
-                      <div>
-                        <h3>{muralNote.title}</h3>
-                        <small>
-                          {muralNote.authorName} · {formatDateTime(muralNote.updatedAt)}
-                        </small>
-                      </div>
-                      {muralNote.authorUserId === user.id ? (
-                        <div className="row-actions">
-                          <button
-                            type="button"
-                            className="icon-button"
-                            onClick={() => handleEditMuralNote(muralNote)}
-                            title="Editar"
-                            aria-label="Editar"
-                          >
-                            <Icon type="edit" />
-                          </button>
-                        </div>
-                      ) : null}
+              <>
+                <p className="muted mural-legend">
+                  O título fica <span className="note-title-read">verde</span> quando o destinatário abre a anotação
+                  pela primeira vez.
+                </p>
+                {sentNoteGroups.map((group) => (
+                  <section className="mural-group" key={group.key}>
+                    <h3 className="mural-group-title">
+                      Para: {group.name}
+                      <span className="mural-group-count">{group.entries.length}</span>
+                    </h3>
+                    <div className="card-grid">
+                      {group.entries.map(({ note: sentNote, recipient }) => (
+                        <article
+                          className={`content-card note-card${recipient.completedAt ? " completed" : ""}${recipient.completedAt && !recipient.completionSeen ? " highlight" : ""}`}
+                          key={sentNote.id}
+                        >
+                          <div className="card-header">
+                            <div>
+                              <h3 className={recipient.readAt ? "note-title-read" : ""}>{sentNote.title}</h3>
+                              <small>
+                                Criado por {sentNote.authorName} · {formatDateTime(sentNote.createdAt)}
+                              </small>
+                            </div>
+                            <div className="row-actions">
+                              {recipient.completedAt ? <span className="note-status done">Pronto</span> : null}
+                              <button
+                                type="button"
+                                className="icon-button"
+                                onClick={() => handleEditMuralNote(sentNote)}
+                                title="Editar"
+                                aria-label="Editar"
+                              >
+                                <Icon type="edit" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="note-meta">
+                            <small>
+                              {recipient.completedAt
+                                ? `Marcada como pronta por ${recipient.name} em ${formatDateTime(recipient.completedAt)}`
+                                : recipient.readAt
+                                  ? `Aberta por ${recipient.name} em ${formatDateTime(recipient.readAt)}`
+                                  : `Ainda não aberta por ${recipient.name}`}
+                            </small>
+                            {sentNote.seiNumber ? (
+                              <small>
+                                SEI: <SeiLink number={sentNote.seiNumber} />
+                              </small>
+                            ) : null}
+                          </div>
+                          <p className="item-notes-display">{sentNote.content}</p>
+                          <TagList tags={sentNote.tags} colors={noteTagColors} />
+                        </article>
+                      ))}
                     </div>
-                    <p>{muralNote.content}</p>
-                    <TagList tags={muralNote.tags} />
-                  </article>
+                  </section>
                 ))}
-              </div>
+              </>
             )}
           </article>
         ) : null}
@@ -3443,7 +4039,12 @@ function App() {
                             <h3>{entry.subject}</h3>
                             <small>
                               Prazo: {formatIsoDateBr(entry.dueDate)}
-                              {entry.seiNumber?.trim() ? ` · SEI ${entry.seiNumber}` : ""}
+                              {entry.seiNumber?.trim() ? (
+                                <>
+                                  {" · SEI "}
+                                  <SeiLink number={entry.seiNumber} />
+                                </>
+                              ) : null}
                             </small>
                           </div>
                           <div className="row-actions">
@@ -4032,6 +4633,28 @@ function App() {
           </article>
         </div>
       ) : null}
+      {pendingCompletionNote
+        ? renderConfirmModal({
+            label: "Confirmar anotação pronta",
+            eyebrow: "Mural",
+            title: "Marcar como pronta?",
+            text: `A anotação "${pendingCompletionNote.title}" será devolvida a ${pendingCompletionNote.authorName} como pronta.`,
+            confirmLabel: "Marcar como pronta",
+            onConfirm: () => handleCompleteReceivedNote(pendingCompletionNote),
+            onCancel: () => setPendingCompletionNote(null),
+          })
+        : null}
+      {pendingTagDeletion
+        ? renderConfirmModal({
+            label: "Confirmar exclusão de etiqueta",
+            eyebrow: "Etiquetas",
+            title: "Excluir etiqueta?",
+            text: `A etiqueta "${pendingTagDeletion.name}" sai da lista. As anotações que já usam a etiqueta continuam mostrando o nome.`,
+            confirmLabel: "Excluir etiqueta",
+            onConfirm: () => handleDeleteNoteTag(pendingTagDeletion),
+            onCancel: () => setPendingTagDeletion(null),
+          })
+        : null}
       {calendarFormOpen ? (
         <div
           className="action-modal"

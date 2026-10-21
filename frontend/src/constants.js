@@ -30,11 +30,31 @@ export const emptyTransferForm = {
   destinationPerson: "",
 };
 
+export const permanentNature = "Permanente";
+
 export const emptyNoteForm = {
   title: "",
   content: "",
-  tags: "",
-  isPublic: false,
+  tags: [],
+  seiNumber: "",
+  recipientUserIds: [],
+};
+
+export const emptyNoteTagForm = {
+  open: false,
+  name: "",
+  color: "#a72420",
+  saving: false,
+};
+
+export const emptyMural = {
+  sent: [],
+  received: [],
+};
+
+export const emptyMuralSummary = {
+  unreadReceived: 0,
+  unseenCompletions: 0,
 };
 
 export const emptyInventoryFilters = {

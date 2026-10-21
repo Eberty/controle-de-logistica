@@ -138,7 +138,7 @@ public class ItemsController : AuthenticatedControllerBase
         };
 
         if (!string.IsNullOrWhiteSpace(assetTag))
-            createdFields.Add($"Tombo: {FormatAuditValue(assetTag)}");
+            createdFields.Add($"Patrimônio: {FormatAuditValue(assetTag)}");
 
         if (!string.IsNullOrWhiteSpace(notes))
             createdFields.Add($"Observações: {FormatAuditValue(notes)}");
@@ -183,6 +183,13 @@ public class ItemsController : AuthenticatedControllerBase
         try
         {
             await AcquireItemsWriteLockAsync();
+
+            if (await AssetTagInUseAsync(assetTag))
+            {
+                await transaction.RollbackAsync();
+                await DeletePhotoFilesAsync(createdPhotoFiles);
+                return Conflict(new { message = DuplicateAssetTagMessage(assetTag) });
+            }
 
             var existingItem = await FindMatchingInventoryItemAsync(new ItemMatchCriteria(
                 name,
@@ -315,6 +322,15 @@ public class ItemsController : AuthenticatedControllerBase
                 return NotFound();
             }
 
+            // Split rows created by transfers share the same asset tag, so only a changed tag is checked.
+            if (!string.Equals(item.AssetTag, assetTag, StringComparison.Ordinal)
+                && await AssetTagInUseAsync(assetTag, item.Id))
+            {
+                await transaction.RollbackAsync();
+                await DeletePhotoFilesAsync(createdPhotoFiles);
+                return Conflict(new { message = DuplicateAssetTagMessage(assetTag) });
+            }
+
             var changedFields = new List<string>();
 
             if (!string.Equals(item.Name, name, StringComparison.Ordinal))
@@ -324,7 +340,7 @@ public class ItemsController : AuthenticatedControllerBase
                 changedFields.Add($"Quantidade: {item.Quantity} -> {request.Quantity}");
 
             if (!string.Equals(item.AssetTag, assetTag, StringComparison.Ordinal))
-                changedFields.Add($"Tombo: {FormatAuditValue(item.AssetTag)} -> {FormatAuditValue(assetTag)}");
+                changedFields.Add($"Patrimônio: {FormatAuditValue(item.AssetTag)} -> {FormatAuditValue(assetTag)}");
 
             if (!string.Equals(item.Nature, nature, StringComparison.Ordinal))
                 changedFields.Add($"Natureza: {FormatAuditValue(item.Nature)} -> {FormatAuditValue(nature)}");
@@ -519,9 +535,6 @@ public class ItemsController : AuthenticatedControllerBase
 
     private async Task<(NormalizedItemRequest? Item, string? ErrorMessage)> ValidateAndNormalizeItemAsync(ItemUpsertRequest request)
     {
-        if (!IsNumericAssetTag(request.AssetTag))
-            return (null, "O tombo deve conter apenas números.");
-
         var quantityError = ValidateRequestedQuantity(request.Quantity);
         if (quantityError is not null)
             return (null, quantityError);
@@ -538,6 +551,10 @@ public class ItemsController : AuthenticatedControllerBase
         if (resolvedNature is null)
             return (null, "Natureza inválida. Use uma das opções do sistema.");
 
+        var isPermanent = CatalogRules.IsPermanentNature(resolvedNature);
+        if (isPermanent && !IsNumericAssetTag(item.AssetTag))
+            return (null, "O patrimônio deve conter apenas números.");
+
         var resolvedCondition = CatalogRules.ResolveCondition(item.Condition);
         if (resolvedCondition is null)
             return (null, "Estado de conservação inválido. Use uma das opções do sistema.");
@@ -548,6 +565,7 @@ public class ItemsController : AuthenticatedControllerBase
 
         return (item with
         {
+            AssetTag = isPermanent ? item.AssetTag : string.Empty,
             Nature = resolvedNature,
             Location = resolvedLocation,
             Condition = resolvedCondition
@@ -562,6 +580,17 @@ public class ItemsController : AuthenticatedControllerBase
         (request.Condition ?? string.Empty).Trim(),
         (request.Notes ?? string.Empty).Trim(),
         request.IsDischarged);
+
+    private async Task<bool> AssetTagInUseAsync(string assetTag, int? ignoredItemId = null)
+    {
+        if (string.IsNullOrWhiteSpace(assetTag))
+            return false;
+
+        return await Context.Items.AnyAsync(x => x.AssetTag == assetTag && x.Id != ignoredItemId);
+    }
+
+    private static string DuplicateAssetTagMessage(string assetTag) =>
+        $"Já existe um item cadastrado com o patrimônio {assetTag}.";
 
     private static bool IsNumericAssetTag(string? value)
     {

@@ -1,4 +1,5 @@
 using AssetManagement.Data;
+using AssetManagement.Dtos;
 using AssetManagement.Models;
 using AssetManagement.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -175,6 +176,47 @@ public abstract class AuthenticatedControllerBase : ControllerBase
                 NormalizeResponsiblePerson(x.ResponsiblePerson),
                 normalizedResponsiblePerson,
                 StringComparison.OrdinalIgnoreCase));
+    }
+
+    protected async Task<List<UserNoteDto>> MapNotesWithRecipientsAsync(IReadOnlyCollection<UserNote> notes)
+    {
+        var noteIds = notes.Select(x => x.Id).ToList();
+        var authorIds = notes.Select(x => x.UserId).Distinct().ToList();
+        var recipients = await Context.UserNoteRecipients
+            .AsNoTracking()
+            .Where(x => noteIds.Contains(x.NoteId))
+            .Join(
+                Context.Users.AsNoTracking(),
+                recipient => recipient.UserId,
+                user => user.Id,
+                (recipient, user) => new { recipient, user.FullName, user.Username })
+            .ToListAsync();
+        var authors = await Context.Users
+            .AsNoTracking()
+            .Where(x => authorIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => DisplayNameFrom(x.FullName, x.Username));
+
+        return notes.Select(note => new UserNoteDto(
+            note.Id,
+            note.Title,
+            note.Content,
+            note.Tags,
+            note.SeiNumber,
+            note.UserId,
+            authors.GetValueOrDefault(note.UserId, string.Empty),
+            note.CreatedAt,
+            note.UpdatedAt,
+            recipients
+                .Where(x => x.recipient.NoteId == note.Id)
+                .Select(x => new NoteRecipientDto(
+                    x.recipient.UserId,
+                    DisplayNameFrom(x.FullName, x.Username),
+                    x.recipient.ReadAt,
+                    x.recipient.CompletedAt,
+                    x.recipient.CompletionSeenAt is not null))
+                .OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList()))
+            .ToList();
     }
 
     protected async Task MergeItemAsync(Item fromItem, int toItemId)

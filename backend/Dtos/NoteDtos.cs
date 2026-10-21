@@ -5,15 +5,52 @@ namespace AssetManagement.Dtos;
 public record UserNoteRequest(
     [Required][StringLength(200)] string Title,
     [Required][StringLength(10000)] string Content,
-    [StringLength(500)] string? Tags,
-    bool? IsPublic = null);
+    string[]? Tags,
+    [StringLength(100, ErrorMessage = "O número do SEI excede o limite de 100 caracteres.")] string? SeiNumber,
+    int[]? RecipientUserIds);
 
-public record MuralNoteDto(
+public record NoteRecipientDto(
+    int UserId,
+    string Name,
+    DateTime? ReadAt,
+    DateTime? CompletedAt,
+    bool CompletionSeen);
+
+public record UserNoteDto(
     int Id,
     string Title,
     string Content,
     string Tags,
+    string SeiNumber,
     int AuthorUserId,
     string AuthorName,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    IReadOnlyList<NoteRecipientDto> Recipients);
+
+public record ReceivedNoteDto(
+    int Id,
+    string Title,
+    string Content,
+    string Tags,
+    string SeiNumber,
+    int AuthorUserId,
+    string AuthorName,
+    DateTime CreatedAt,
+    DateTime UpdatedAt,
+    DateTime? ReadAt,
+    DateTime? CompletedAt);
+
+public record MuralResponse(
+    IReadOnlyList<UserNoteDto> Sent,
+    IReadOnlyList<ReceivedNoteDto> Received);
+
+public record MuralSummaryDto(int UnreadReceived, int UnseenCompletions);
+
+public record NoteRecipientOptionDto(int Id, string Name);
+
+public record NoteTagRequest(
+    [Required][StringLength(50, ErrorMessage = "O nome da etiqueta excede o limite de 50 caracteres.")] string Name,
+    [Required] string Color);
+
+public record NoteTagDto(int Id, string Name, string Color);

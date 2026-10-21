@@ -1,4 +1,5 @@
 const paths = {
+  close: <path d="M7 7l10 10M17 7 7 17" />,
   columns: (
     <>
       <rect x="2.5" y="3" width="4" height="18" rx="1" />
@@ -39,6 +40,14 @@ const paths = {
       <path d="M5.5 21v-2.8h2.8" />
     </>
   ),
+  sort: (
+    <>
+      <path d="M8 9.5l4-4 4 4" />
+      <path d="M8 14.5l4 4 4-4" />
+    </>
+  ),
+  sortAsc: <path d="M7 14.5l5-5 5 5" />,
+  sortDesc: <path d="M7 9.5l5 5 5-5" />,
   settings: (
     <>
       <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z" />

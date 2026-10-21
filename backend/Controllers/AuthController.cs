@@ -182,7 +182,16 @@ public class AuthController : AuthenticatedControllerBase
 
         await using var transaction = await Context.Database.BeginTransactionAsync();
         var userNotes = await Context.UserNotes.Where(x => x.UserId == id).ToListAsync();
-        var removedMuralNotes = userNotes.Where(x => x.IsPublic).ToList();
+        var userNoteIds = userNotes.Select(x => x.Id).ToList();
+        var sentNoteIds = await Context.UserNoteRecipients
+            .Where(x => userNoteIds.Contains(x.NoteId))
+            .Select(x => x.NoteId)
+            .Distinct()
+            .ToListAsync();
+        var removedMuralNotes = userNotes.Where(x => sentNoteIds.Contains(x.Id)).ToList();
+        await Context.UserNoteRecipients
+            .Where(x => x.UserId == id || userNoteIds.Contains(x.NoteId))
+            .ExecuteDeleteAsync();
         Context.UserNotes.RemoveRange(userNotes);
         Context.Users.Remove(user);
         await Context.SaveChangesAsync();

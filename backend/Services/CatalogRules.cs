@@ -6,6 +6,12 @@ public static class CatalogRules
 {
     private static readonly Lazy<CatalogOptions> Catalog = new(LoadCatalog);
 
+    // Only permanent items carry an asset number (patrimônio).
+    public const string PermanentNature = "Permanente";
+
+    public static bool IsPermanentNature(string nature) =>
+        string.Equals(nature, PermanentNature, StringComparison.OrdinalIgnoreCase);
+
     public static string? ResolveNature(string value) =>
         ResolveOption(Catalog.Value.ItemNatureOptions, value);
 
