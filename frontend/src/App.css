@@ -948,6 +948,7 @@ tr.active-row {
 
 .section-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: start;
   justify-content: space-between;
   gap: 12px;
@@ -1609,6 +1610,16 @@ tr.active-row {
 @media (max-width: 640px) {
   .shell {
     padding: 18px;
+  }
+
+  /* Keeps room for the fixed mobile menu button, which the padding above would remove. */
+  .app-shell {
+    padding-top: 76px;
+  }
+
+  .section-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
 
   .hero-panel,

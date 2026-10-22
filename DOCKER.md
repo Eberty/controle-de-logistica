@@ -2,11 +2,11 @@
 
 ## Arquitetura
 
-| Serviço    | Imagem / Build                                         | Porta (host) | Descrição                                        |
-| ---------- | ------------------------------------------------------ | ------------ | ------------------------------------------------ |
-| `db`       | `postgres:17-alpine`                                   | `5432`       | PostgreSQL com volume nomeado para persistência  |
-| `backend`  | `backend/Dockerfile` (multi-stage)                     | `5256`       | API .NET 10 (interna na 8080, non-root)          |
-| `frontend` | `node:22-alpine` (dev) / `frontend/Dockerfile` (prod)  | `5173`       | Vite dev server com hot reload                   |
+| Serviço    | Imagem / Build                                                            | Porta (host) | Descrição                                       |
+| ---------- | ------------------------------------------------------------------------- | ------------ | ----------------------------------------------- |
+| `db`       | PostgreSQL (imagem no `docker-compose.yml`)                               | `5432`       | PostgreSQL com volume nomeado para persistência |
+| `backend`  | `backend/Dockerfile` (multi-stage)                                        | `5256`       | API .NET (interna na 8080, non-root)            |
+| `frontend` | Node (dev, imagem no `docker-compose.yml`) / `frontend/Dockerfile` (prod) | `5173`       | Vite dev server com hot reload                  |
 
 > Os dois Dockerfiles usam a **raiz do repositório como contexto de build**, pois backend e frontend dependem de `shared/catalog.json`.
 
@@ -74,12 +74,13 @@ Ambos os comandos devem ser executados a partir da **raiz do repositório**.
 
 ### Variáveis de ambiente relevantes em produção (backend)
 
-| Variável                                 | Exemplo                                            |
-| ---------------------------------------- | -------------------------------------------------- |
-| `Database__Provider`                     | `PostgreSQL`                                       |
-| `ConnectionStrings__DefaultConnection`   | `Host=...;Database=...;Username=...;Password=...`  |
-| `Storage__Provider`                      | `S3` (ou `Local` com volume em `/app/Data/images`) |
-| `AllowedOrigins__0`                      | `https://app.seudominio.com`                       |
-| `Proxy__TrustForwardedHeaders`           | `true` (se atrás de reverse proxy)                 |
+| Variável                               | Exemplo                                               |
+| -------------------------------------- | ----------------------------------------------------- |
+| `Database__Provider`                   | `PostgreSQL`                                          |
+| `ConnectionStrings__DefaultConnection` | `Host=...;Database=...;Username=...;Password=...`     |
+| `Storage__Provider`                    | `S3` (ou `Local` com volume em `/app/Data/images`)    |
+| `AllowedOrigins__0`                    | `https://slt18bbm.com.br`                             |
+| `Proxy__TrustForwardedHeaders`         | `true` (se atrás de reverse proxy)                    |
+| `Proxy__KnownNetworks__0`              | `172.28.0.0/16` (rede interna do compose de produção) |
 
-Em produção o TLS deve ser terminado por um reverse proxy (Nginx, ALB, etc.) na frente dos contêineres — a API escuta apenas HTTP na porta 8080. Como não há porta HTTPS configurada no contêiner, o `UseHttpsRedirection` não redireciona; configure `AllowedOrigins` para liberar o CORS do frontend.
+Em produção, esses valores são gerados a partir dos secrets do GitHub (veja `docs/DEPLOYMENT.md`). O HTTPS é terminado pelo Cloudflare, e o nginx do `docker-compose.prod.yml` encaminha as requisições aos contêineres (veja `docs/NGINX_HTTPS.md`): a API escuta apenas HTTP na porta 8080, dentro da rede do Docker. Como não há porta HTTPS no contêiner, o `UseHttpsRedirection` não redireciona; configure `AllowedOrigins` para liberar o CORS do frontend.

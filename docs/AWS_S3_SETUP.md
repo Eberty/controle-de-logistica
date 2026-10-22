@@ -31,7 +31,7 @@ Console AWS → **S3 → Create bucket**:
 
 Nenhuma Bucket Policy e nenhum CORS são necessários nesta opção.
 
-Para separar ambientes, use um bucket por ambiente (`slt18bbm-app-images-staging` / `slt18bbm-app-images-prod`) **ou** um único bucket com prefixos, configurando a GitHub Variable `AWS_S3_KEY_PREFIX` (`staging` / `production`) — o backend já aplica o prefixo via `Storage__S3__KeyPrefix`.
+Se quiser guardar as fotos numa "pasta" dentro do bucket, configure a GitHub Variable opcional `AWS_S3_KEY_PREFIX` (por exemplo, `production`). O backend já aplica o prefixo via `Storage__S3__KeyPrefix`.
 
 ### 2. Criar a política IAM do backend
 
@@ -81,7 +81,7 @@ Console AWS → **IAM → Users → Create user**:
 
 ### 4. GitHub Secrets/Variables
 
-Em **Settings → Environments** (`staging` e `production`), adicionar:
+Em **Settings → Environments → production**, adicionar:
 
 | Tipo | Nome | Exemplo |
 | --- | --- | --- |
@@ -89,9 +89,9 @@ Em **Settings → Environments** (`staging` e `production`), adicionar:
 | Secret | `AWS_SECRET_ACCESS_KEY` | `wJalr...` |
 | Secret | `AWS_REGION` | `us-east-2` |
 | Secret | `AWS_S3_BUCKET_NAME` | `slt18bbm-app-images` |
-| Variable (opcional) | `AWS_S3_KEY_PREFIX` | `staging` / `production` |
+| Variable (opcional) | `AWS_S3_KEY_PREFIX` | `production` |
 
-Os workflows de deploy injetam esses valores no `.env` da EC2, e o `docker-compose.prod.yml` os repassa ao backend como `Storage__S3__*`.
+O workflow de deploy injeta esses valores no `.env` da EC2, e o `docker-compose.prod.yml` os repassa ao backend como `Storage__S3__*`.
 
 ---
 

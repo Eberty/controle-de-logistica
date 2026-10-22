@@ -4,18 +4,19 @@ A aplicação é buildada pelo GitHub Actions, publicada no GitHub Container Reg
 
 | Ambiente | Trigger | Workflow |
 | --- | --- | --- |
-| Staging | `push` na branch `develop` | `.github/workflows/deploy-staging.yml` |
 | Production | Manual (`workflow_dispatch`) ou tag `v*` | `.github/workflows/deploy-production.yml` |
 
-Fluxo: **Build and Push** (imagens `backend` e `frontend` → GHCR) → **Deploy** (SSH na EC2: login no GHCR, gera `.env` com a connection string do RDS, copia o compose e roda `docker compose up -d --remove-orphans`).
+Não há ambiente de staging: as mudanças são testadas localmente e publicadas direto em produção.
+
+Fluxo: **Build and Push** (imagens `backend` e `frontend` → GHCR) → **Deploy** (SSH na EC2: copia o compose e a pasta `nginx/`, faz login no GHCR, gera o `.env` com a connection string do RDS e roda `docker compose up -d --remove-orphans`).
 
 ---
 
 ## 1. GitHub Secrets e Variables
 
-Use **Environments** do GitHub (`Settings → Environments`): crie `staging` e `production`. Os dois workflows referenciam esses ambientes, então cada um lê seu próprio conjunto de secrets/variables com os mesmos nomes. No ambiente `production`, ative **Required reviewers** para exigir aprovação antes do deploy.
+Use o **Environment** `production` do GitHub (`Settings → Environments`). O workflow de produção referencia esse ambiente e lê dele os secrets e variables abaixo. Se quiser exigir aprovação antes de cada deploy, ative **Required reviewers** nesse ambiente.
 
-### Secrets (por ambiente)
+### Secrets
 
 | Secret | Descrição | Exemplo |
 | --- | --- | --- |
@@ -26,25 +27,25 @@ Use **Environments** do GitHub (`Settings → Environments`): crie `staging` e `
 | `GHCR_USERNAME` | Usuário GitHub dono do PAT usado pela EC2 para puxar imagens | `eberty` |
 | `GHCR_PAT` | Personal Access Token com escopo `read:packages` | `ghp_xxx...` |
 
-### Variables (por ambiente)
+Os secrets do S3 (`AWS_REGION`, `AWS_S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) estão em [AWS_S3_SETUP.md](AWS_S3_SETUP.md).
 
-| Variable | Descrição | Exemplo staging | Exemplo production |
-| --- | --- | --- | --- |
-| `API_BASE_URL` | URL pública da API, embutida no build do frontend (`VITE_API_BASE_URL`) | `https://api.staging.slt18bbm.com.br` | `https://api.slt18bbm.com.br` |
-| `APP_ORIGIN` | Origin do frontend, usado no CORS do backend (`AllowedOrigins__0`) | `https://staging.slt18bbm.com.br` | `https://slt18bbm.com.br` |
-| `FRONTEND_HOST` | Hostname (sem esquema) servido pelo Nginx para o frontend | `staging.slt18bbm.com.br` | `slt18bbm.com.br` |
-| `API_HOST` | Hostname (sem esquema) servido pelo Nginx para a API | `api.staging.slt18bbm.com.br` | `api.slt18bbm.com.br` |
+### Variables
 
-> Sem domínio/HTTPS ainda? Use `http://<IP-da-EC2>:8080` como `API_BASE_URL` e `http://<IP-da-EC2>` como `APP_ORIGIN`.
-
-O domínio do projeto é `slt18bbm.com.br` (registro.br). Registros DNS necessários, todos do tipo `A`, apontando para o IP público da EC2 de cada ambiente:
-
-| Registro | Ambiente | Serve |
+| Variable | Descrição | Valor |
 | --- | --- | --- |
-| `slt18bbm.com.br` (e `www`) | production | Frontend |
-| `api.slt18bbm.com.br` | production | Backend |
-| `staging.slt18bbm.com.br` | staging | Frontend |
-| `api.staging.slt18bbm.com.br` | staging | Backend |
+| `API_BASE_URL` | URL pública da API, embutida no build do frontend (`VITE_API_BASE_URL`) | `https://api.slt18bbm.com.br` |
+| `APP_ORIGIN` | Origin do frontend, usado no CORS do backend (`AllowedOrigins__0`) | `https://slt18bbm.com.br` |
+| `FRONTEND_HOST` | Hostname (sem esquema) servido pelo Nginx para o frontend | `slt18bbm.com.br` |
+| `API_HOST` | Hostname (sem esquema) servido pelo Nginx para a API | `api.slt18bbm.com.br` |
+
+> O nginx só responde aos hostnames configurados em `FRONTEND_HOST` e `API_HOST`: acesso direto pelo IP da EC2 é descartado, e a API não fica exposta em nenhuma outra porta. Por isso o domínio precisa estar configurado antes do primeiro deploy (veja [NGINX_HTTPS.md](NGINX_HTTPS.md)).
+
+O domínio do projeto é `slt18bbm.com.br` (registro.br). Registros DNS necessários, todos do tipo `A`, apontando para o IP público da EC2:
+
+| Registro | Serve |
+| --- | --- |
+| `slt18bbm.com.br` (e `www`) | Frontend |
+| `api.slt18bbm.com.br` | Backend |
 
 Alterou `API_BASE_URL`? É preciso **rebuildar** a imagem do frontend (a URL é embutida no build) — re-execute o pipeline completo, não só o job de deploy.
 
@@ -61,7 +62,7 @@ Pontos de atenção:
 - **Banco dedicado:** o RDS cria por padrão apenas o banco administrativo `postgres`. Usá-lo funciona (o backend cria as tabelas automaticamente no primeiro boot), mas o ideal é um banco próprio, criado uma única vez a partir da EC2:
 
   ```bash
-  sudo dnf install -y postgresql16
+  sudo dnf install -y postgresql16   # ou o pacote postgresqlNN disponível no dnf
   psql -h ENDPOINT_DO_RDS -U USUARIO_MASTER -d postgres -c "CREATE DATABASE asset_management;"
   ```
 
@@ -100,7 +101,7 @@ docker compose version
 mkdir -p ~/app
 ```
 
-O pipeline copia o `docker-compose.prod.yml` para `~/app/` e gera o `~/app/.env` a cada deploy.
+O pipeline copia o `docker-compose.prod.yml` e a pasta `nginx/` para `~/app/` e gera o `~/app/.env` a cada deploy.
 
 ### 2.3 Par de chaves SSH dedicado para o GitHub Actions
 
@@ -152,9 +153,9 @@ Crie dois Security Groups na mesma VPC:
 | --- | --- | --- | --- |
 | Inbound | 80 | **ranges do Cloudflare** (prefix list) | Todo o tráfego (frontend e API) via Nginx; HTTPS terminado no Cloudflare |
 | Inbound | 22 | **seu IP** (`x.x.x.x/32`) | Administração SSH |
+| Outbound | tudo | `0.0.0.0/0` | Pull de imagens, RDS, updates |
 
 > As portas 8080 e 443 **não** devem ser expostas: com o reverse proxy atrás do Cloudflare (ver [NGINX_HTTPS.md](NGINX_HTTPS.md)), frontend e backend só existem na rede interna do Docker e a origem só fala HTTP na 80. Se regras antigas existirem, remova-as.
-| Outbound | tudo | `0.0.0.0/0` | Pull de imagens, RDS, updates |
 
 Sobre o SSH do GitHub Actions: os runners não têm IP fixo. Opções, da mais simples à mais robusta:
 
@@ -183,7 +184,6 @@ Usar o *ID do Security Group* como origem é o ponto-chave: qualquer instância 
 
 1. RDS criado, `sg-db` liberando 5432 apenas para `sg-app`, banco e usuário criados.
 2. EC2 com Docker instalado, `~/app` criado, chave pública do pipeline no `authorized_keys`.
-3. Environments `staging` e `production` no GitHub com todas as Secrets/Variables da seção 1.
-4. Branch `develop` criada — o push nela dispara o deploy de staging.
-5. Production: rode manualmente em **Actions → Deploy Production → Run workflow** (branch `main`) ou crie uma tag `v1.0.0`.
-6. Validação na EC2: `docker compose -f ~/app/docker-compose.prod.yml --env-file ~/app/.env ps` e `docker logs` dos serviços.
+3. Environment `production` no GitHub com todas as Secrets/Variables da seção 1.
+4. Rode manualmente em **Actions → Deploy Production → Run workflow** (branch `main`) ou crie uma tag `v1.0.0`.
+5. Validação na EC2: `docker compose -f ~/app/docker-compose.prod.yml --env-file ~/app/.env ps` e `docker logs` dos serviços.

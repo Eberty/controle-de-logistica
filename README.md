@@ -1,6 +1,6 @@
 # Controle Patrimonial e Logística
 
-Sistema web para gestão de patrimônio e logística. Ele permite controlar inventário, transferências, anotações privadas, mural compartilhado, calendário de prazos e auditoria.
+Sistema web para gestão de patrimônio e logística. Ele permite controlar inventário, transferências, anotações (privadas ou enviadas a outros usuários), mural de anotações, calendário de prazos e auditoria.
 
 ---
 
@@ -76,10 +76,10 @@ Feche terminais antigos do projeto e rode o comando de iniciar o sistema novamen
 
 * Login com usuário e senha
 * Cadastro, edição e exclusão de itens de inventário
-* Controle de quantidade, tombo, natureza, localização e conservação
+* Controle de quantidade, patrimônio, natureza, localização e conservação
 * Transferência de material
-* Anotações privadas por usuário
-* Mural compartilhado de recados
+* Anotações privadas por usuário, com etiquetas e número do SEI
+* Mural privado com anotações enviadas e recebidas entre usuários
 * Calendário de prazos com número do SEI e assunto
 * Histórico individual por item
 * Auditoria administrativa
@@ -104,70 +104,74 @@ backend/Data/images
 
 ---
 
-## Deploy em produção (AWS)
+## Onde o sistema está no ar
 
-O sistema tem quatro partes que ficam em lugares diferentes na nuvem:
-
-| Parte | O que é | Onde fica na AWS |
+| Site | API | Como publicar |
 | --- | --- | --- |
-| Frontend | Site em React (arquivos estáticos) | S3 + CloudFront (HTTPS) |
-| Backend | API em .NET | Servidor de aplicação + HTTPS |
-| Banco | PostgreSQL | RDS (gerenciado) |
-| Fotos | Imagens dos itens | Bucket S3 |
+| <https://slt18bbm.com.br> | <https://api.slt18bbm.com.br> | Manual, pelo GitHub Actions (abaixo) ou com uma tag `v*` |
 
-### Ordem sugerida dos passos
+O endereço `www.slt18bbm.com.br` redireciona para `slt18bbm.com.br`.
 
-1. **Criar a conta AWS** e ativar a autenticação em duas etapas (MFA) no usuário raiz.
-2. **Banco (RDS PostgreSQL):** criar uma instância pequena. Anotar host, porta, banco, usuário e senha.
-3. **Fotos (S3):** criar um bucket privado para as imagens e uma chave de acesso (IAM) com permissão só nesse bucket.
-4. **Backend:** publicar a API com as variáveis de ambiente abaixo e um endereço HTTPS.
-5. **Frontend:** gerar os arquivos com o comando da seção *Build do frontend* (abaixo) e publicá-los em outro bucket S3 servido pelo CloudFront.
-6. **Domínio e HTTPS:** apontar o domínio (Route 53 ou seu registrador) para o CloudFront (frontend) e para o backend, com certificado (ACM).
+Não há ambiente de teste (staging): teste as mudanças localmente, como descrito no início deste README, antes de publicar em produção.
 
-### Variáveis de ambiente do backend (produção)
+### Publicar em produção
 
-Defina todas no servidor onde a API roda:
+1. No GitHub, abra **Actions → Deploy Production**.
+2. Clique em **Run workflow**. Em algumas versões do GitHub, esse botão fica no menu **⋯**, ao lado do título.
+3. Deixe **Branch: main** e confirme.
 
-```text
-ASPNETCORE_ENVIRONMENT=Production
-ASPNETCORE_URLS=http://0.0.0.0:8080
-AllowedOrigins__0=https://SEU_DOMINIO_DO_FRONTEND
-
-Database__Provider=PostgreSQL
-ConnectionStrings__DefaultConnection=Host=SEU_HOST;Port=5432;Database=SEU_BANCO;Username=SEU_USUARIO;Password=SUA_SENHA;SSL Mode=Require;Trust Server Certificate=true
-
-Storage__Provider=S3
-Storage__S3__Bucket=SEU_BUCKET
-Storage__S3__Region=us-east-1
-Storage__S3__AccessKey=SUA_ACCESS_KEY
-Storage__S3__SecretKey=SUA_SECRET_KEY
-Storage__S3__KeyPrefix=items
-```
-
-* `ASPNETCORE_URLS=http://0.0.0.0:8080` define a porta em que a API escuta. Sem isso, ela sobe só em `localhost` e o proxy/load balancer não consegue alcançá-la.
-* `AllowedOrigins__0` deve ser o endereço exato do frontend (senão o navegador bloqueia as chamadas por CORS). Para mais de um endereço, use `AllowedOrigins__1`, `AllowedOrigins__2`, etc.
-
-Se usar um serviço compatível com S3 que não seja AWS, adicione:
-
-```text
-Storage__S3__ServiceUrl=https://endpoint-do-servico
-Storage__S3__ForcePathStyle=true
-```
-
-Se o backend ficar atrás de um proxy reverso (nginx, load balancer da AWS), configure também para o limite de tentativas de login funcionar por IP:
-
-```text
-Proxy__TrustForwardedHeaders=true
-Proxy__KnownNetworks__0=172.31.0.0/16
-```
-
-### Build do frontend
-
-O frontend precisa saber o endereço do backend **no momento do build**:
+Pelo terminal, com o GitHub CLI:
 
 ```bash
-VITE_API_BASE_URL=https://SEU_DOMINIO_DO_BACKEND
-npm --prefix frontend run build
+gh workflow run deploy-production.yml --repo Eberty/controle-de-logistica --ref main
 ```
 
-Os arquivos gerados ficam em `frontend/dist` — é esse conteúdo que vai para o bucket S3 do frontend.
+Quando o workflow terminar, a versão nova já está no ar. Como as sessões ficam na memória da API, todos os usuários precisam entrar de novo. Os detalhes da infraestrutura (EC2, RDS, GHCR e secrets) estão em `docs/DEPLOYMENT.md`.
+
+---
+
+## Como a produção funciona
+
+```text
+Navegador ── HTTPS ──▶ Cloudflare ── HTTP ──▶ EC2 (Docker)
+                                               └─ nginx ─┬─ slt18bbm.com.br      ──▶ frontend
+                                                         └─ api.slt18bbm.com.br  ──▶ backend ──▶ RDS (PostgreSQL)
+                                                                                           └──▶ S3 (fotos)
+```
+
+| Parte | O que é | Onde roda |
+| --- | --- | --- |
+| Domínio e HTTPS | `slt18bbm.com.br` e `api.slt18bbm.com.br` | Cloudflare, que termina o HTTPS e encaminha para a EC2 |
+| Proxy | nginx, que separa o site e a API pelo endereço | Contêiner na EC2, na porta 80 (a única aberta para o Cloudflare) |
+| Frontend | Site em React, servido como arquivos estáticos | Contêiner na EC2 |
+| Backend | API em .NET | Contêiner na EC2 |
+| Banco | PostgreSQL | Amazon RDS (fora da EC2) |
+| Fotos | Imagens dos itens | Bucket S3 privado (o navegador só acessa pela API) |
+| Imagens Docker | Backend e frontend já montados | GitHub Actions monta e guarda no GitHub Container Registry (GHCR) |
+
+### O que acontece num deploy
+
+1. O GitHub Actions monta as imagens do backend e do frontend e envia ao GHCR.
+2. Entra na EC2 por SSH, copia o `docker-compose.prod.yml` e os arquivos do nginx, gera o `.env` a partir dos secrets do GitHub e baixa as imagens novas.
+3. Recria os contêineres com `docker compose up -d`. Ao subir, o backend atualiza sozinho as tabelas do banco (não há migrations para rodar à mão).
+
+### Configuração
+
+As senhas e endereços **não** ficam no código nem são digitados no servidor. Ficam nos **Environments** do GitHub (`Settings → Environments → production`) e chegam à EC2 a cada deploy:
+
+* **Secrets:** acesso à EC2 (`EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`), banco (`DB_CONNECTION_STRING`), acesso ao GHCR (`GHCR_USERNAME`, `GHCR_PAT`) e S3 (`AWS_REGION`, `AWS_S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
+* **Variables:** endereços públicos (`API_BASE_URL`, `APP_ORIGIN`, `FRONTEND_HOST`, `API_HOST`) e o prefixo opcional das fotos (`AWS_S3_KEY_PREFIX`).
+
+Depois de alterar um secret ou uma variable, rode o deploy de novo para o valor chegar ao servidor. O `API_BASE_URL` é embutido no frontend na hora de montar a imagem, então mudar esse valor também exige um deploy completo.
+
+Para testar a configuração de produção na própria máquina, copie `.env.example` para `.env`, ajuste os valores e rode o comando abaixo. As imagens do GHCR são privadas: faça `docker login ghcr.io` antes, ou monte as imagens localmente (veja `DOCKER.md`) e use os mesmos nomes e tags do `.env`.
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env up -d
+```
+
+### Guias detalhados
+
+* [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): GitHub Actions, secrets e variables, preparação da EC2, RDS, rede e checklist do primeiro deploy.
+* [`docs/NGINX_HTTPS.md`](docs/NGINX_HTTPS.md): nginx, Cloudflare e HTTPS.
+* [`docs/AWS_S3_SETUP.md`](docs/AWS_S3_SETUP.md): bucket S3 das fotos e usuário IAM.

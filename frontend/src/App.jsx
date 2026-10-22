@@ -373,8 +373,7 @@ function App() {
   });
   const [muralSummary, setMuralSummary] = useState(emptyMuralSummary);
   const [openedReceivedNoteIds, setOpenedReceivedNoteIds] = useState([]);
-  const [pendingCompletionNote, setPendingCompletionNote] = useState(null);
-  const [pendingTagDeletion, setPendingTagDeletion] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
   const [noteTags, setNoteTags] = useState([]);
   const [noteTagForm, setNoteTagForm] = useState(emptyNoteTagForm);
   const [noteRecipientOptions, setNoteRecipientOptions] = useState([]);
@@ -1178,8 +1177,7 @@ function App() {
     setMuralSummary(emptyMuralSummary);
     muralSummaryRef.current = emptyMuralSummary;
     setOpenedReceivedNoteIds([]);
-    setPendingCompletionNote(null);
-    setPendingTagDeletion(null);
+    closeConfirmDialog(false);
     setNoteTags([]);
     setNoteTagForm(emptyNoteTagForm);
     setNoteRecipientOptions([]);
@@ -1292,7 +1290,12 @@ function App() {
   async function handleDeleteUser(targetUser) {
     if (targetUser.id === user?.id) return;
 
-    const confirmed = window.confirm(`Excluir o usuário "${targetUser.username}"?`);
+    const confirmed = await confirmAction({
+      eyebrow: "Usuários",
+      title: "Excluir usuário?",
+      text: `O usuário "${targetUser.username}" será excluído.`,
+      confirmLabel: "Excluir usuário",
+    });
     if (!confirmed) return;
 
     setBusy(true);
@@ -1450,7 +1453,13 @@ function App() {
       return;
     }
 
-    if (!window.confirm(`Excluir a localização "${locationToRemove}"?`)) return;
+    const confirmed = await confirmAction({
+      eyebrow: "Localizações",
+      title: "Excluir localização?",
+      text: `A localização "${locationToRemove}" será excluída.`,
+      confirmLabel: "Excluir localização",
+    });
+    if (!confirmed) return;
 
     setNewLocationForm((current) => ({ ...current, removing: true }));
     setMessage("");
@@ -1555,7 +1564,13 @@ function App() {
   }
 
   async function handleDeleteItem(itemId) {
-    if (!window.confirm("Excluir este item do inventário?")) return;
+    const confirmed = await confirmAction({
+      eyebrow: "Inventário",
+      title: "Excluir item?",
+      text: "Este item será excluído do inventário.",
+      confirmLabel: "Excluir item",
+    });
+    if (!confirmed) return;
 
     setBusy(true);
     try {
@@ -1800,12 +1815,19 @@ function App() {
   }
 
   async function handleCompleteReceivedNote(receivedNote) {
+    const confirmed = await confirmAction({
+      eyebrow: "Mural",
+      title: "Marcar como pronta?",
+      text: `A anotação "${receivedNote.title}" será devolvida a ${receivedNote.authorName} como pronta.`,
+      confirmLabel: "Marcar como pronta",
+    });
+    if (!confirmed) return;
+
     setBusy(true);
     setMessage("");
 
     try {
       await request(`/api/mural/${receivedNote.id}/done`, { token, method: "POST" });
-      setPendingCompletionNote(null);
       setMessage("Anotação devolvida ao remetente como pronta.", "success");
       await loadMural();
     } catch (error) {
@@ -1846,13 +1868,20 @@ function App() {
   }
 
   async function handleDeleteNoteTag(tag) {
+    const confirmed = await confirmAction({
+      eyebrow: "Etiquetas",
+      title: "Excluir etiqueta?",
+      text: `A etiqueta "${tag.name}" sai da lista. As anotações que já usam a etiqueta continuam mostrando o nome.`,
+      confirmLabel: "Excluir etiqueta",
+    });
+    if (!confirmed) return;
+
     setBusy(true);
     setMessage("");
 
     try {
       await request(`/api/note-tags/${tag.id}`, { token, method: "DELETE" });
       setNoteTags((current) => current.filter((item) => item.id !== tag.id));
-      setPendingTagDeletion(null);
       setMessage("Etiqueta excluída.", "success");
     } catch (error) {
       handleRequestError(error);
@@ -1966,7 +1995,13 @@ function App() {
   }
 
   async function handleDeleteNote(noteId) {
-    if (!window.confirm("Excluir esta anotação?")) return;
+    const confirmed = await confirmAction({
+      eyebrow: "Anotações",
+      title: "Excluir anotação?",
+      text: "Esta anotação será excluída.",
+      confirmLabel: "Excluir anotação",
+    });
+    if (!confirmed) return;
 
     setBusy(true);
     setMessage("");
@@ -2116,7 +2151,13 @@ function App() {
   }
 
   async function handleDeleteCalendarEntry(entryId) {
-    if (!window.confirm("Excluir esta anotação do calendário?")) return;
+    const confirmed = await confirmAction({
+      eyebrow: "Calendário",
+      title: "Excluir anotação do calendário?",
+      text: "Esta anotação será excluída do calendário.",
+      confirmLabel: "Excluir anotação",
+    });
+    if (!confirmed) return;
 
     setBusy(true);
     setMessage("");
@@ -2242,28 +2283,53 @@ function App() {
     }
   }
 
-  function renderConfirmModal({ label, eyebrow, title, text, confirmLabel, onConfirm, onCancel }) {
+  // Replaces window.confirm with the app's own dialog; resolves to true when the user confirms.
+  function confirmAction({ eyebrow, title, text, confirmLabel }) {
+    return new Promise((resolve) => {
+      setConfirmDialog({ eyebrow, title, text, confirmLabel, resolve });
+    });
+  }
+
+  function closeConfirmDialog(confirmed) {
+    confirmDialog?.resolve(confirmed);
+    setConfirmDialog(null);
+  }
+
+  function renderConfirmModal() {
+    if (!confirmDialog) return null;
+
     return (
-      <div className="action-modal" role="dialog" aria-modal="true" aria-label={label} onMouseDown={onCancel}>
+      <div
+        className="action-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={confirmDialog.title}
+        onMouseDown={() => closeConfirmDialog(false)}
+      >
         <article
           className="panel section-card action-modal-card confirm-modal"
           onMouseDown={(event) => event.stopPropagation()}
         >
-          <button className="photo-viewer-close action-modal-close" type="button" onClick={onCancel} aria-label="Fechar">
+          <button
+            className="photo-viewer-close action-modal-close"
+            type="button"
+            onClick={() => closeConfirmDialog(false)}
+            aria-label="Fechar"
+          >
             ×
           </button>
           <div className="section-heading">
             <div>
-              <p className="eyebrow">{eyebrow}</p>
-              <h2>{title}</h2>
+              <p className="eyebrow">{confirmDialog.eyebrow}</p>
+              <h2>{confirmDialog.title}</h2>
             </div>
           </div>
-          <p className="muted">{text}</p>
+          <p className="muted">{confirmDialog.text}</p>
           <div className="button-row">
-            <button className="primary" type="button" disabled={busy} onClick={onConfirm}>
-              {confirmLabel}
+            <button className="primary" type="button" onClick={() => closeConfirmDialog(true)}>
+              {confirmDialog.confirmLabel}
             </button>
-            <button className="ghost" type="button" onClick={onCancel}>
+            <button className="ghost" type="button" onClick={() => closeConfirmDialog(false)}>
               Cancelar
             </button>
           </div>
@@ -3593,7 +3659,7 @@ function App() {
                         <button
                           type="button"
                           className="tag-remove-button"
-                          onClick={() => setPendingTagDeletion(tag)}
+                          onClick={() => handleDeleteNoteTag(tag)}
                           title={`Excluir a etiqueta ${tag.name}`}
                           aria-label={`Excluir a etiqueta ${tag.name}`}
                         >
@@ -3853,7 +3919,7 @@ function App() {
                                       className="primary"
                                       type="button"
                                       disabled={busy}
-                                      onClick={() => setPendingCompletionNote(receivedNote)}
+                                      onClick={() => handleCompleteReceivedNote(receivedNote)}
                                     >
                                       Pronto
                                     </button>
@@ -4633,28 +4699,7 @@ function App() {
           </article>
         </div>
       ) : null}
-      {pendingCompletionNote
-        ? renderConfirmModal({
-            label: "Confirmar anotação pronta",
-            eyebrow: "Mural",
-            title: "Marcar como pronta?",
-            text: `A anotação "${pendingCompletionNote.title}" será devolvida a ${pendingCompletionNote.authorName} como pronta.`,
-            confirmLabel: "Marcar como pronta",
-            onConfirm: () => handleCompleteReceivedNote(pendingCompletionNote),
-            onCancel: () => setPendingCompletionNote(null),
-          })
-        : null}
-      {pendingTagDeletion
-        ? renderConfirmModal({
-            label: "Confirmar exclusão de etiqueta",
-            eyebrow: "Etiquetas",
-            title: "Excluir etiqueta?",
-            text: `A etiqueta "${pendingTagDeletion.name}" sai da lista. As anotações que já usam a etiqueta continuam mostrando o nome.`,
-            confirmLabel: "Excluir etiqueta",
-            onConfirm: () => handleDeleteNoteTag(pendingTagDeletion),
-            onCancel: () => setPendingTagDeletion(null),
-          })
-        : null}
+      {renderConfirmModal()}
       {calendarFormOpen ? (
         <div
           className="action-modal"
