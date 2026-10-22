@@ -106,72 +106,12 @@ backend/Data/images
 
 ## Onde o sistema está no ar
 
-| Site | API | Como publicar |
-| --- | --- | --- |
-| <https://slt18bbm.com.br> | <https://api.slt18bbm.com.br> | Manual, pelo GitHub Actions (abaixo) ou com uma tag `v*` |
+O sistema está publicado em <https://slt18bbm.com.br>.
 
-O endereço `www.slt18bbm.com.br` redireciona para `slt18bbm.com.br`.
-
-Não há ambiente de teste (staging): teste as mudanças localmente, como descrito no início deste README, antes de publicar em produção.
-
-### Publicar em produção
-
-1. No GitHub, abra **Actions → Deploy Production**.
-2. Clique em **Run workflow**. Em algumas versões do GitHub, esse botão fica no menu **⋯**, ao lado do título.
-3. Deixe **Branch: main** e confirme.
-
-Pelo terminal, com o GitHub CLI:
-
-```bash
-gh workflow run deploy-production.yml --repo Eberty/controle-de-logistica --ref main
-```
-
-Quando o workflow terminar, a versão nova já está no ar. Como as sessões ficam na memória da API, todos os usuários precisam entrar de novo. Os detalhes da infraestrutura (EC2, RDS, GHCR e secrets) estão em `docs/DEPLOYMENT.md`.
+Antes de publicar uma versão nova, as mudanças são testadas no computador, como descrito acima.
 
 ---
 
-## Como a produção funciona
+## Para quem mantém o sistema
 
-```text
-Navegador ── HTTPS ──▶ Cloudflare ── HTTP ──▶ EC2 (Docker)
-                                               └─ nginx ─┬─ slt18bbm.com.br      ──▶ frontend
-                                                         └─ api.slt18bbm.com.br  ──▶ backend ──▶ RDS (PostgreSQL)
-                                                                                           └──▶ S3 (fotos)
-```
-
-| Parte | O que é | Onde roda |
-| --- | --- | --- |
-| Domínio e HTTPS | `slt18bbm.com.br` e `api.slt18bbm.com.br` | Cloudflare, que termina o HTTPS e encaminha para a EC2 |
-| Proxy | nginx, que separa o site e a API pelo endereço | Contêiner na EC2, na porta 80 (a única aberta para o Cloudflare) |
-| Frontend | Site em React, servido como arquivos estáticos | Contêiner na EC2 |
-| Backend | API em .NET | Contêiner na EC2 |
-| Banco | PostgreSQL | Amazon RDS (fora da EC2) |
-| Fotos | Imagens dos itens | Bucket S3 privado (o navegador só acessa pela API) |
-| Imagens Docker | Backend e frontend já montados | GitHub Actions monta e guarda no GitHub Container Registry (GHCR) |
-
-### O que acontece num deploy
-
-1. O GitHub Actions monta as imagens do backend e do frontend e envia ao GHCR.
-2. Entra na EC2 por SSH, copia o `docker-compose.prod.yml` e os arquivos do nginx, gera o `.env` a partir dos secrets do GitHub e baixa as imagens novas.
-3. Recria os contêineres com `docker compose up -d`. Ao subir, o backend atualiza sozinho as tabelas do banco (não há migrations para rodar à mão).
-
-### Configuração
-
-As senhas e endereços **não** ficam no código nem são digitados no servidor. Ficam nos **Environments** do GitHub (`Settings → Environments → production`) e chegam à EC2 a cada deploy:
-
-* **Secrets:** acesso à EC2 (`EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`), banco (`DB_CONNECTION_STRING`), acesso ao GHCR (`GHCR_USERNAME`, `GHCR_PAT`) e S3 (`AWS_REGION`, `AWS_S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
-* **Variables:** endereços públicos (`API_BASE_URL`, `APP_ORIGIN`, `FRONTEND_HOST`, `API_HOST`) e o prefixo opcional das fotos (`AWS_S3_KEY_PREFIX`).
-
-Depois de alterar um secret ou uma variable, rode o deploy de novo para o valor chegar ao servidor. O `API_BASE_URL` é embutido no frontend na hora de montar a imagem, então mudar esse valor também exige um deploy completo.
-
-Para testar a configuração de produção na própria máquina, copie `.env.example` para `.env`, ajuste os valores e rode o comando abaixo. As imagens do GHCR são privadas: faça `docker login ghcr.io` antes, ou monte as imagens localmente (veja `DOCKER.md`) e use os mesmos nomes e tags do `.env`.
-
-```bash
-docker compose -f docker-compose.prod.yml --env-file .env up -d
-```
-
-### Guias detalhados
-
-* [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): GitHub Actions, secrets e variables, preparação da EC2, RDS, rede e checklist do primeiro deploy.
-* [`docs/NGINX_HTTPS.md`](docs/NGINX_HTTPS.md): nginx, Cloudflare e HTTPS.
-* [`docs/AWS_S3_SETUP.md`](docs/AWS_S3_SETUP.md): bucket S3 das fotos e usuário IAM.
+Como publicar uma versão nova e como a hospedagem na nuvem está montada: veja [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).

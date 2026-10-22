@@ -10,6 +10,24 @@ Não há ambiente de staging: as mudanças são testadas localmente e publicadas
 
 Fluxo: **Build and Push** (imagens `backend` e `frontend` → GHCR) → **Deploy** (SSH na EC2: copia o compose e a pasta `nginx/`, faz login no GHCR, gera o `.env` com a connection string do RDS e roda `docker compose up -d --remove-orphans`).
 
+## Publicar uma nova versão
+
+As mudanças precisam estar commitadas e enviadas para a `main`: o workflow publica o que está no GitHub, não a cópia local.
+
+1. No GitHub, abra **Actions → Deploy Production**.
+2. Clique em **Run workflow**. Em algumas versões do GitHub, esse botão fica no menu **⋯**, ao lado do título.
+3. Deixe **Branch: main** e confirme.
+
+Pelo terminal, com o GitHub CLI:
+
+```bash
+gh workflow run deploy-production.yml --repo Eberty/controle-de-logistica --ref main
+```
+
+Quando o workflow terminar, a versão nova já está em <https://slt18bbm.com.br>. Como as sessões ficam na memória da API, todos os usuários precisam entrar de novo.
+
+Para testar a configuração de produção na própria máquina, copie `.env.example` para `.env`, ajuste os valores e rode `docker compose -f docker-compose.prod.yml --env-file .env up -d`. As imagens do GHCR são privadas: faça `docker login ghcr.io` antes, ou monte as imagens localmente (veja `DOCKER.md`) e use os mesmos nomes e tags do `.env`.
+
 ---
 
 ## 1. GitHub Secrets e Variables
