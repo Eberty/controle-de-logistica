@@ -78,7 +78,7 @@ Feche terminais antigos do projeto e rode o comando de iniciar o sistema novamen
 * Cadastro, edição e exclusão de itens de inventário
 * Controle de quantidade, patrimônio, natureza, localização e conservação
 * Transferência de material
-* Anotações privadas por usuário, com etiquetas e número do SEI
+* Anotações privadas por usuário, com etiquetas, prazo opcional e número do SEI
 * Mural privado com anotações enviadas e recebidas entre usuários
 * Calendário de prazos com número do SEI e assunto
 * Histórico individual por item

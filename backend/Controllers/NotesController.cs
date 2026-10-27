@@ -1,3 +1,4 @@
+using System.Globalization;
 using AssetManagement.Data;
 using AssetManagement.Dtos;
 using AssetManagement.Models;
@@ -54,6 +55,8 @@ public class NotesController : AuthenticatedControllerBase
             Content = fields.Content,
             Tags = fields.Tags,
             SeiNumber = fields.SeiNumber,
+            SeiProcessId = fields.SeiProcessId,
+            DueDate = fields.DueDate,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -102,13 +105,17 @@ public class NotesController : AuthenticatedControllerBase
             !string.Equals(note.Title, fields.Title, StringComparison.Ordinal)
             || !string.Equals(note.Content, fields.Content, StringComparison.Ordinal)
             || !string.Equals(note.Tags, fields.Tags, StringComparison.Ordinal)
-            || !string.Equals(note.SeiNumber, fields.SeiNumber, StringComparison.Ordinal);
+            || !string.Equals(note.SeiNumber, fields.SeiNumber, StringComparison.Ordinal)
+            || !string.Equals(note.SeiProcessId, fields.SeiProcessId, StringComparison.Ordinal)
+            || !string.Equals(note.DueDate, fields.DueDate, StringComparison.Ordinal);
 
         var now = DateTime.UtcNow;
         note.Title = fields.Title;
         note.Content = fields.Content;
         note.Tags = fields.Tags;
         note.SeiNumber = fields.SeiNumber;
+        note.SeiProcessId = fields.SeiProcessId;
+        note.DueDate = fields.DueDate;
         note.UpdatedAt = now;
 
         await using var transaction = await Context.Database.BeginTransactionAsync();
@@ -171,6 +178,8 @@ public class NotesController : AuthenticatedControllerBase
         string Content,
         string Tags,
         string SeiNumber,
+        string SeiProcessId,
+        string DueDate,
         IReadOnlyList<User> Recipients);
 
     private Task LogMuralAsync(User actor, string action, UserNote note, string details) =>
@@ -205,7 +214,15 @@ public class NotesController : AuthenticatedControllerBase
             return (null, "Destinatário inválido. Selecione usuários cadastrados no sistema.");
 
         var seiNumber = (request.SeiNumber ?? string.Empty).Trim();
-        return (new NoteFields(title, content, tags, seiNumber, recipients), null);
+        if (!SeiLinks.TryParseProcessId(request.SeiLink, out var seiProcessId))
+            return (null, SeiLinks.InvalidLinkMessage);
+
+        var dueDate = (request.DueDate ?? string.Empty).Trim();
+        if (dueDate.Length > 0
+            && !DateOnly.TryParseExact(dueDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+            return (null, "Informe uma data válida para o prazo.");
+
+        return (new NoteFields(title, content, tags, seiNumber, seiProcessId, dueDate, recipients), null);
     }
 
     private async Task<(string Tags, string? Error)> ResolveTagsAsync(string[]? requestedTags, string currentTags)

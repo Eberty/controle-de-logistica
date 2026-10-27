@@ -58,6 +58,8 @@ public class MuralController : AuthenticatedControllerBase
             x.note.Content,
             x.note.Tags,
             x.note.SeiNumber,
+            x.note.SeiProcessId,
+            x.note.DueDate,
             x.note.UserId,
             DisplayNameFrom(x.FullName, x.Username),
             x.note.CreatedAt,

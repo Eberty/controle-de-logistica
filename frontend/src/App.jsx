@@ -29,6 +29,7 @@ import {
   locationOptions,
   permanentNature,
 } from "./constants";
+import { buildSeiProcessUrl } from "./sei";
 import { splitTags, tagColorKey, tagStyle } from "./tags";
 
 const auditPageSize = 100;
@@ -281,6 +282,22 @@ function daysUntilIsoDate(isoDate) {
 
 function isUrgentIsoDate(isoDate) {
   return daysUntilIsoDate(isoDate) < calendarUrgentWindowDays;
+}
+
+// Deadline line shown on note cards; finished notes keep the date without the warning badge.
+function renderNoteDueDate(dueDate, finished) {
+  if (!dueDate) return null;
+
+  return (
+    <small>
+      Prazo: {formatIsoDateBr(dueDate)}
+      {finished ? null : daysUntilIsoDate(dueDate) < 0 ? (
+        <span className="calendar-subject-badge overdue note-due-badge">Vencido</span>
+      ) : isUrgentIsoDate(dueDate) ? (
+        <span className="calendar-subject-badge note-due-badge">Prazo próximo</span>
+      ) : null}
+    </small>
+  );
 }
 
 function buildCalendarDays(year, month) {
@@ -1933,6 +1950,8 @@ function App() {
         content: noteForm.content,
         tags: noteForm.tags,
         seiNumber: noteForm.seiNumber,
+        seiLink: noteForm.seiLink,
+        dueDate: noteForm.hasDueDate ? noteForm.dueDate : "",
         recipientUserIds: noteForm.recipientUserIds,
       };
 
@@ -1965,6 +1984,9 @@ function App() {
       content: noteItem.content ?? "",
       tags: splitTags(noteItem.tags),
       seiNumber: noteItem.seiNumber ?? "",
+      seiLink: noteItem.seiProcessId ? buildSeiProcessUrl(noteItem.seiProcessId) : "",
+      hasDueDate: Boolean(noteItem.dueDate),
+      dueDate: noteItem.dueDate ?? "",
       recipientUserIds: (noteItem.recipients ?? []).map((recipient) => recipient.userId),
     });
   }
@@ -2043,6 +2065,7 @@ function App() {
     setCalendarForm({
       dueDate: entry.dueDate ?? "",
       seiNumber: entry.seiNumber ?? "",
+      seiLink: entry.seiProcessId ? buildSeiProcessUrl(entry.seiProcessId) : "",
       subject: entry.subject ?? "",
       notes: entry.notes ?? "",
     });
@@ -2073,7 +2096,7 @@ function App() {
             </p>
           )}
           <p>
-            <strong>Número do SEI:</strong> {entry.seiNumber?.trim() ? <SeiLink number={entry.seiNumber} /> : "-"}
+            <strong>Número do SEI:</strong> {entry.seiNumber?.trim() || entry.seiProcessId ? <SeiLink number={entry.seiNumber} processId={entry.seiProcessId} onCopy={handleSeiNumberCopied} /> : "-"}
           </p>
           <p className="item-notes-display">
             <strong>Observações:</strong> {entry.notes?.trim() || "-"}
@@ -2123,6 +2146,7 @@ function App() {
       const payload = {
         dueDate: calendarForm.dueDate,
         seiNumber: calendarForm.seiNumber,
+        seiLink: calendarForm.seiLink,
         subject: calendarForm.subject,
         notes: calendarForm.notes,
       };
@@ -2280,6 +2304,14 @@ function App() {
       emptyMessage: "Nenhum item encontrado.",
     })) {
       setMessage("Não foi possível preparar a exportação em PDF.");
+    }
+  }
+
+  function handleSeiNumberCopied(copied) {
+    if (copied) {
+      setMessage("Número SEI copiado. Cole na pesquisa rápida do SEI.", "success");
+    } else {
+      setMessage("Não foi possível copiar o número SEI. Copie o número e cole na pesquisa rápida do SEI.");
     }
   }
 
@@ -3623,6 +3655,39 @@ function App() {
               onChange={(event) => setNoteForm((current) => ({ ...current, seiNumber: event.target.value }))}
               placeholder="Número do processo ou ofício SEI (opcional)"
             />
+            <div className="note-field">
+              <input
+                value={noteForm.seiLink}
+                maxLength={2000}
+                onChange={(event) => setNoteForm((current) => ({ ...current, seiLink: event.target.value }))}
+                placeholder="Link de acesso direto do processo no SEI (opcional)"
+                aria-label="Link de acesso direto do processo no SEI"
+              />
+              <small className="muted">
+                Com o link, o número do SEI abre o processo direto. Copie no SEI pelo botão "Link para acesso direto" ou o
+                endereço da página do processo.
+              </small>
+            </div>
+
+            <div className="note-field">
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={noteForm.hasDueDate}
+                  onChange={(event) => setNoteForm((current) => ({ ...current, hasDueDate: event.target.checked }))}
+                />
+                Definir prazo
+              </label>
+              {noteForm.hasDueDate ? (
+                <input
+                  type="date"
+                  value={noteForm.dueDate}
+                  onChange={(event) => setNoteForm((current) => ({ ...current, dueDate: event.target.value }))}
+                  aria-label="Data do prazo"
+                  required
+                />
+              ) : null}
+            </div>
 
             <div className="note-field">
               <span className="note-field-label">Etiquetas</span>
@@ -3801,9 +3866,13 @@ function App() {
                       ? `Enviada para: ${noteItem.recipients.map((recipient) => recipient.name).join(", ")}`
                       : "Privada (sem destinatários)"}
                   </small>
-                  {noteItem.seiNumber ? (
+                  {renderNoteDueDate(
+                    noteItem.dueDate,
+                    noteItem.recipients.length > 0 && noteItem.recipients.every((recipient) => recipient.completedAt),
+                  )}
+                  {noteItem.seiNumber || noteItem.seiProcessId ? (
                     <small>
-                      SEI: <SeiLink number={noteItem.seiNumber} />
+                      SEI: <SeiLink number={noteItem.seiNumber} processId={noteItem.seiProcessId} onCopy={handleSeiNumberCopied} />
                     </small>
                   ) : null}
                 </div>
@@ -3897,20 +3966,21 @@ function App() {
                                 </div>
                               ) : null}
                             </div>
+                            {receivedNote.dueDate || (isOpen && (receivedNote.completedAt || receivedNote.seiNumber || receivedNote.seiProcessId)) ? (
+                              <div className="note-meta">
+                                {isOpen && receivedNote.completedAt ? (
+                                  <small>Marcada como pronta em {formatDateTime(receivedNote.completedAt)}</small>
+                                ) : null}
+                                {renderNoteDueDate(receivedNote.dueDate, Boolean(receivedNote.completedAt))}
+                                {isOpen && (receivedNote.seiNumber || receivedNote.seiProcessId) ? (
+                                  <small>
+                                    SEI: <SeiLink number={receivedNote.seiNumber} processId={receivedNote.seiProcessId} onCopy={handleSeiNumberCopied} />
+                                  </small>
+                                ) : null}
+                              </div>
+                            ) : null}
                             {isOpen ? (
                               <>
-                                {receivedNote.completedAt || receivedNote.seiNumber ? (
-                                  <div className="note-meta">
-                                    {receivedNote.completedAt ? (
-                                      <small>Marcada como pronta em {formatDateTime(receivedNote.completedAt)}</small>
-                                    ) : null}
-                                    {receivedNote.seiNumber ? (
-                                      <small>
-                                        SEI: <SeiLink number={receivedNote.seiNumber} />
-                                      </small>
-                                    ) : null}
-                                  </div>
-                                ) : null}
                                 <p className="item-notes-display">{receivedNote.content}</p>
                                 <TagList tags={receivedNote.tags} colors={noteTagColors} />
                                 {receivedNote.completedAt ? null : (
@@ -3992,9 +4062,10 @@ function App() {
                                   ? `Aberta por ${recipient.name} em ${formatDateTime(recipient.readAt)}`
                                   : `Ainda não aberta por ${recipient.name}`}
                             </small>
-                            {sentNote.seiNumber ? (
+                            {renderNoteDueDate(sentNote.dueDate, Boolean(recipient.completedAt))}
+                            {sentNote.seiNumber || sentNote.seiProcessId ? (
                               <small>
-                                SEI: <SeiLink number={sentNote.seiNumber} />
+                                SEI: <SeiLink number={sentNote.seiNumber} processId={sentNote.seiProcessId} onCopy={handleSeiNumberCopied} />
                               </small>
                             ) : null}
                           </div>
@@ -4105,10 +4176,10 @@ function App() {
                             <h3>{entry.subject}</h3>
                             <small>
                               Prazo: {formatIsoDateBr(entry.dueDate)}
-                              {entry.seiNumber?.trim() ? (
+                              {entry.seiNumber?.trim() || entry.seiProcessId ? (
                                 <>
                                   {" · SEI "}
-                                  <SeiLink number={entry.seiNumber} />
+                                  <SeiLink number={entry.seiNumber} processId={entry.seiProcessId} onCopy={handleSeiNumberCopied} />
                                 </>
                               ) : null}
                             </small>
@@ -4744,6 +4815,17 @@ function App() {
                     setCalendarForm((current) => ({ ...current, seiNumber: event.target.value }))
                   }
                   placeholder="Número do processo no SEI"
+                />
+              </label>
+              <label className="full-width">
+                Link de acesso direto do processo no SEI (opcional)
+                <input
+                  value={calendarForm.seiLink}
+                  maxLength={2000}
+                  onChange={(event) =>
+                    setCalendarForm((current) => ({ ...current, seiLink: event.target.value }))
+                  }
+                  placeholder="Cole o link do processo copiado do SEI"
                 />
               </label>
               <label className="full-width">

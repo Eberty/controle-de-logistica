@@ -54,6 +54,7 @@ public class CalendarController : AuthenticatedControllerBase
             x.entry.Id,
             x.entry.DueDate,
             x.entry.SeiNumber,
+            x.entry.SeiProcessId,
             x.entry.Subject,
             x.entry.Notes,
             x.entry.CreatedByUserId,
@@ -81,6 +82,7 @@ public class CalendarController : AuthenticatedControllerBase
         {
             DueDate = normalized!.DueDate,
             SeiNumber = normalized.SeiNumber,
+            SeiProcessId = normalized.SeiProcessId,
             Subject = normalized.Subject,
             Notes = normalized.Notes,
             CreatedByUserId = currentUser.Id,
@@ -123,6 +125,7 @@ public class CalendarController : AuthenticatedControllerBase
 
         entry.DueDate = normalized!.DueDate;
         entry.SeiNumber = normalized.SeiNumber;
+        entry.SeiProcessId = normalized.SeiProcessId;
         entry.Subject = normalized.Subject;
         entry.Notes = normalized.Notes;
         entry.UpdatedAt = DateTime.UtcNow;
@@ -192,10 +195,14 @@ public class CalendarController : AuthenticatedControllerBase
         if (string.IsNullOrWhiteSpace(subject))
             return (null, "Informe o assunto da anotação.");
 
+        if (!SeiLinks.TryParseProcessId(request.SeiLink, out var seiProcessId))
+            return (null, SeiLinks.InvalidLinkMessage);
+
         return (new CalendarEntry
         {
             DueDate = dueDate,
             SeiNumber = (request.SeiNumber ?? string.Empty).Trim(),
+            SeiProcessId = seiProcessId,
             Subject = subject,
             Notes = (request.Notes ?? string.Empty).Trim()
         }, null);
@@ -205,6 +212,7 @@ public class CalendarController : AuthenticatedControllerBase
         entry.Id,
         entry.DueDate,
         entry.SeiNumber,
+        entry.SeiProcessId,
         entry.Subject,
         entry.Notes,
         entry.CreatedByUserId,

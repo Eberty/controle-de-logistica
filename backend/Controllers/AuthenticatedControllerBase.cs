@@ -202,6 +202,8 @@ public abstract class AuthenticatedControllerBase : ControllerBase
             note.Content,
             note.Tags,
             note.SeiNumber,
+            note.SeiProcessId,
+            note.DueDate,
             note.UserId,
             authors.GetValueOrDefault(note.UserId, string.Empty),
             note.CreatedAt,

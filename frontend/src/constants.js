@@ -37,6 +37,9 @@ export const emptyNoteForm = {
   content: "",
   tags: [],
   seiNumber: "",
+  seiLink: "",
+  hasDueDate: false,
+  dueDate: "",
   recipientUserIds: [],
 };
 
@@ -69,6 +72,7 @@ export const emptyInventoryFilters = {
 export const emptyCalendarForm = {
   dueDate: "",
   seiNumber: "",
+  seiLink: "",
   subject: "",
   notes: "",
 };

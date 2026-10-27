@@ -1,10 +1,12 @@
-// public/sei.html forwards the number to the SEI Bahia public search, which only accepts it by POST.
-export function buildSeiSearchUrl(number) {
-  return `/sei.html?numero=${encodeURIComponent(String(number ?? "").trim())}`;
+// SEI rejects links to a process built outside a logged-in session ("Link sem assinatura"). With the internal process
+// id from the "acesso direto" link, the process opens directly; with only the number, the link opens the SEI entry
+// page and the number is copied to be pasted into the SEI quick search, which opens the process.
+export const SEI_HOME_URL = "https://seibahia.ba.gov.br/sei/";
+
+export function buildSeiProcessUrl(processId) {
+  return `${SEI_HOME_URL}controlador.php?acao=procedimento_trabalhar&id_procedimento=${encodeURIComponent(processId)}`;
 }
 
-// Restricted processes do not show up in the public search, so the number is also copied
-// for the logged-in quick search.
 export function copySeiNumber(number) {
-  navigator.clipboard?.writeText(String(number ?? "").trim()).catch(() => {});
+  return navigator.clipboard?.writeText(String(number ?? "").trim()) ?? Promise.reject(new Error("Sem área de transferência"));
 }

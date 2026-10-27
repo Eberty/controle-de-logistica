@@ -1907,3 +1907,7 @@ tr.active-row {
 .calendar-day:disabled {
   pointer-events: none;
 }
+
+.note-due-badge {
+  margin-left: 8px;
+}

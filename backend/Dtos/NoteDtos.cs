@@ -7,7 +7,9 @@ public record UserNoteRequest(
     [Required][StringLength(10000)] string Content,
     string[]? Tags,
     [StringLength(100, ErrorMessage = "O número do SEI excede o limite de 100 caracteres.")] string? SeiNumber,
-    int[]? RecipientUserIds);
+    int[]? RecipientUserIds,
+    string? DueDate = null,
+    [StringLength(2000)] string? SeiLink = null);
 
 public record NoteRecipientDto(
     int UserId,
@@ -22,6 +24,8 @@ public record UserNoteDto(
     string Content,
     string Tags,
     string SeiNumber,
+    string SeiProcessId,
+    string DueDate,
     int AuthorUserId,
     string AuthorName,
     DateTime CreatedAt,
@@ -34,6 +38,8 @@ public record ReceivedNoteDto(
     string Content,
     string Tags,
     string SeiNumber,
+    string SeiProcessId,
+    string DueDate,
     int AuthorUserId,
     string AuthorName,
     DateTime CreatedAt,

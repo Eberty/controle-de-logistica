@@ -8,7 +8,8 @@ public class UserNote
     public string Content { get; set; } = string.Empty;
     public string Tags { get; set; } = string.Empty;
     public string SeiNumber { get; set; } = string.Empty;
-    // Legacy column from the public mural; always false now. Existing SQLite databases keep it as NOT NULL without a default.
+    public string SeiProcessId { get; set; } = string.Empty;
+    public string DueDate { get; set; } = string.Empty;
     public bool IsPublic { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }

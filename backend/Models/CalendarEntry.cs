@@ -5,6 +5,7 @@ public class CalendarEntry
     public int Id { get; set; }
     public string DueDate { get; set; } = string.Empty;
     public string SeiNumber { get; set; } = string.Empty;
+    public string SeiProcessId { get; set; } = string.Empty;
     public string Subject { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
     public int CreatedByUserId { get; set; }
