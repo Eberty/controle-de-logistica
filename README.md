@@ -80,7 +80,7 @@ Feche terminais antigos do projeto e rode o comando de iniciar o sistema novamen
 * Transferência de material
 * Anotações privadas por usuário, com etiquetas, prazo opcional e número do SEI
 * Mural privado com anotações enviadas, recebidas e concluídas: quem recebe pode encaminhar a anotação a outro usuário, e o administrador conclui (ou reabre) a anotação depois que ela volta como "Pronto"
-* Calendário de prazos com número do SEI e assunto; anotações enviadas com prazo entram sozinhas no calendário e saem quando são concluídas
+* Calendário de prazos com número do SEI e assunto; anotações com prazo entram sozinhas no calendário de quem criou ou recebeu a anotação e saem quando são concluídas
 * Histórico individual por item
 * Auditoria administrativa
 

@@ -2214,7 +2214,8 @@ function App() {
           <small>Criado em {formatDateTime(entry.createdAt)}</small>
           {entry.noteId ? (
             <small className="muted">
-              Para mudar a data, edite a anotação. O prazo sai do calendário quando a anotação é concluída.
+              Prazo de anotação: só aparece para quem criou ou recebeu a anotação. Para mudar a data, edite a
+              anotação. O prazo sai do calendário quando a anotação é concluída.
             </small>
           ) : null}
         </div>

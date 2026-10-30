@@ -233,13 +233,12 @@ public abstract class AuthenticatedControllerBase : ControllerBase
             .ToDictionaryAsync(x => x.Id, x => DisplayNameFrom(x.FullName, x.Username));
     }
 
-    // Keeps the calendar entry of a sent, open note with a deadline in step with the note; private notes stay out
-    // of the shared calendar.
+    // Keeps the calendar entry of an open note with a deadline in step with the note. CalendarController shows it
+    // only to the note author and recipients.
     protected async Task SyncNoteCalendarEntryAsync(UserNote note)
     {
         var entry = await Context.CalendarEntries.FirstOrDefaultAsync(x => x.NoteId == note.Id);
-        var hasRecipients = await Context.UserNoteRecipients.AnyAsync(x => x.NoteId == note.Id);
-        if (note.ConcludedAt is not null || string.IsNullOrEmpty(note.DueDate) || !hasRecipients)
+        if (note.ConcludedAt is not null || string.IsNullOrEmpty(note.DueDate))
         {
             if (entry is not null)
             {
@@ -267,7 +266,9 @@ public abstract class AuthenticatedControllerBase : ControllerBase
         entry.SeiNumber = note.SeiNumber;
         entry.SeiProcessId = note.SeiProcessId;
         entry.Subject = note.Title;
-        entry.Notes = "Prazo de anotação enviada pelo Mural.";
+        entry.Notes = await Context.UserNoteRecipients.AnyAsync(x => x.NoteId == note.Id)
+            ? "Prazo de anotação enviada pelo Mural."
+            : "Prazo de anotação privada.";
         entry.UpdatedAt = now;
         await Context.SaveChangesAsync();
     }

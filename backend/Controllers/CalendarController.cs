@@ -14,7 +14,7 @@ public class CalendarController : AuthenticatedControllerBase
 {
     private const int MaxEntries = 5000;
     private const string NoteEntryMessage =
-        "Este prazo vem de uma anotação enviada pelo Mural. Altere o prazo na própria anotação.";
+        "Este prazo vem de uma anotação. Altere o prazo na própria anotação.";
 
     private readonly IAuditLogger _auditLogger;
 
@@ -27,11 +27,15 @@ public class CalendarController : AuthenticatedControllerBase
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
-        var (ok, _, error) = await TryGetCurrentUserAsync();
+        var (ok, currentUser, error) = await TryGetCurrentUserAsync();
         if (!ok) return error!;
 
+        // Entries added in the calendar are shared; a note deadline shows only to the note author and recipients.
         var rows = await Context.CalendarEntries
             .AsNoTracking()
+            .Where(x => x.NoteId == null
+                || Context.UserNotes.Any(note => note.Id == x.NoteId && note.UserId == currentUser.Id)
+                || Context.UserNoteRecipients.Any(recipient => recipient.NoteId == x.NoteId && recipient.UserId == currentUser.Id))
             .GroupJoin(
                 Context.Users.AsNoTracking(),
                 entry => entry.CreatedByUserId,
