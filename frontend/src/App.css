@@ -1509,6 +1509,41 @@ tr.active-row {
   color: #86efac;
 }
 
+.forward-panel {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 220, 176, 0.22);
+}
+
+.concluded-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.concluded-card {
+  gap: 10px;
+}
+
+.concluded-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.concluded-title:hover,
+.concluded-title[aria-expanded="true"] {
+  background: none;
+  color: #ffdcb0;
+  text-decoration: underline;
+}
+
 .note-status {
   align-self: center;
   padding: 4px 10px;

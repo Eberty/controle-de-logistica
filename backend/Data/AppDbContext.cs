@@ -41,5 +41,6 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<AuditLog>().HasIndex(a => new { a.EntityType, a.EntityId });
         modelBuilder.Entity<AuditLog>().HasIndex(a => a.Timestamp);
         modelBuilder.Entity<CalendarEntry>().HasIndex(c => c.DueDate);
+        modelBuilder.Entity<CalendarEntry>().HasIndex(c => c.NoteId);
     }
 }

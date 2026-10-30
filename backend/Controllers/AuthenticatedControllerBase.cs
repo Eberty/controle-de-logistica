@@ -178,23 +178,21 @@ public abstract class AuthenticatedControllerBase : ControllerBase
                 StringComparison.OrdinalIgnoreCase));
     }
 
+    protected const string ConcludedNoteMessage =
+        "Anotação concluída não pode ser alterada. Um administrador pode reabri-la na aba Concluídos do Mural.";
+
     protected async Task<List<UserNoteDto>> MapNotesWithRecipientsAsync(IReadOnlyCollection<UserNote> notes)
     {
         var noteIds = notes.Select(x => x.Id).ToList();
-        var authorIds = notes.Select(x => x.UserId).Distinct().ToList();
         var recipients = await Context.UserNoteRecipients
             .AsNoTracking()
             .Where(x => noteIds.Contains(x.NoteId))
-            .Join(
-                Context.Users.AsNoTracking(),
-                recipient => recipient.UserId,
-                user => user.Id,
-                (recipient, user) => new { recipient, user.FullName, user.Username })
             .ToListAsync();
-        var authors = await Context.Users
-            .AsNoTracking()
-            .Where(x => authorIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => DisplayNameFrom(x.FullName, x.Username));
+        var names = await LoadUserNamesAsync(notes
+            .Select(x => x.UserId)
+            .Concat(notes.Where(x => x.ConcludedByUserId is not null).Select(x => x.ConcludedByUserId!.Value))
+            .Concat(recipients.Select(x => x.UserId))
+            .Concat(recipients.Where(x => x.ForwardedByUserId is not null).Select(x => x.ForwardedByUserId!.Value)));
 
         return notes.Select(note => new UserNoteDto(
             note.Id,
@@ -205,20 +203,73 @@ public abstract class AuthenticatedControllerBase : ControllerBase
             note.SeiProcessId,
             note.DueDate,
             note.UserId,
-            authors.GetValueOrDefault(note.UserId, string.Empty),
+            names.GetValueOrDefault(note.UserId, string.Empty),
             note.CreatedAt,
             note.UpdatedAt,
             recipients
-                .Where(x => x.recipient.NoteId == note.Id)
-                .Select(x => new NoteRecipientDto(
-                    x.recipient.UserId,
-                    DisplayNameFrom(x.FullName, x.Username),
-                    x.recipient.ReadAt,
-                    x.recipient.CompletedAt,
-                    x.recipient.CompletionSeenAt is not null))
+                .Where(x => x.NoteId == note.Id)
+                .Select(x => ToRecipientDto(x, names))
                 .OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
-                .ToList()))
+                .ToList(),
+            note.ConcludedAt,
+            note.ConcludedByUserId is null ? string.Empty : names.GetValueOrDefault(note.ConcludedByUserId.Value, string.Empty)))
             .ToList();
+    }
+
+    protected static NoteRecipientDto ToRecipientDto(UserNoteRecipient recipient, IReadOnlyDictionary<int, string> names) => new(
+        recipient.UserId,
+        names.GetValueOrDefault(recipient.UserId, string.Empty),
+        recipient.ReadAt,
+        recipient.CompletedAt,
+        recipient.CompletionSeenAt is not null,
+        recipient.ForwardedByUserId is null ? string.Empty : names.GetValueOrDefault(recipient.ForwardedByUserId.Value, string.Empty));
+
+    protected async Task<Dictionary<int, string>> LoadUserNamesAsync(IEnumerable<int> userIds)
+    {
+        var ids = userIds.Distinct().ToList();
+        return await Context.Users
+            .AsNoTracking()
+            .Where(x => ids.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => DisplayNameFrom(x.FullName, x.Username));
+    }
+
+    // Keeps the calendar entry of a sent, open note with a deadline in step with the note; private notes stay out
+    // of the shared calendar.
+    protected async Task SyncNoteCalendarEntryAsync(UserNote note)
+    {
+        var entry = await Context.CalendarEntries.FirstOrDefaultAsync(x => x.NoteId == note.Id);
+        var hasRecipients = await Context.UserNoteRecipients.AnyAsync(x => x.NoteId == note.Id);
+        if (note.ConcludedAt is not null || string.IsNullOrEmpty(note.DueDate) || !hasRecipients)
+        {
+            if (entry is not null)
+            {
+                Context.CalendarEntries.Remove(entry);
+                await Context.SaveChangesAsync();
+            }
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (entry is null)
+        {
+            var author = await Context.Users.AsNoTracking().FirstAsync(x => x.Id == note.UserId);
+            entry = new CalendarEntry
+            {
+                NoteId = note.Id,
+                CreatedByUserId = author.Id,
+                CreatedByUserName = UserDisplayName(author),
+                CreatedAt = now
+            };
+            Context.CalendarEntries.Add(entry);
+        }
+
+        entry.DueDate = note.DueDate;
+        entry.SeiNumber = note.SeiNumber;
+        entry.SeiProcessId = note.SeiProcessId;
+        entry.Subject = note.Title;
+        entry.Notes = "Prazo de anotação enviada pelo Mural.";
+        entry.UpdatedAt = now;
+        await Context.SaveChangesAsync();
     }
 
     protected async Task MergeItemAsync(Item fromItem, int toItemId)

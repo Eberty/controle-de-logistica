@@ -33,5 +33,8 @@ public static class AuditActions
     public const string Publish = "Publicação";
     public const string Remove = "Remoção";
     public const string Send = "Envio";
-    public const string Complete = "Conclusão";
+    public const string MarkDone = "Pronto";
+    public const string Forward = "Encaminhamento";
+    public const string Conclude = "Conclusão";
+    public const string Reopen = "Reabertura";
 }

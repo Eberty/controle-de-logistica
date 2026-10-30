@@ -53,6 +53,7 @@ export const emptyNoteTagForm = {
 export const emptyMural = {
   sent: [],
   received: [],
+  concluded: [],
 };
 
 export const emptyMuralSummary = {

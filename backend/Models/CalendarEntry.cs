@@ -8,6 +8,7 @@ public class CalendarEntry
     public string SeiProcessId { get; set; } = string.Empty;
     public string Subject { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
+    public int? NoteId { get; set; }
     public int CreatedByUserId { get; set; }
     public string CreatedByUserName { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }

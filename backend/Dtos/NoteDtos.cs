@@ -16,7 +16,8 @@ public record NoteRecipientDto(
     string Name,
     DateTime? ReadAt,
     DateTime? CompletedAt,
-    bool CompletionSeen);
+    bool CompletionSeen,
+    string ForwardedByName);
 
 public record UserNoteDto(
     int Id,
@@ -30,7 +31,9 @@ public record UserNoteDto(
     string AuthorName,
     DateTime CreatedAt,
     DateTime UpdatedAt,
-    IReadOnlyList<NoteRecipientDto> Recipients);
+    IReadOnlyList<NoteRecipientDto> Recipients,
+    DateTime? ConcludedAt,
+    string ConcludedByName);
 
 public record ReceivedNoteDto(
     int Id,
@@ -45,11 +48,16 @@ public record ReceivedNoteDto(
     DateTime CreatedAt,
     DateTime UpdatedAt,
     DateTime? ReadAt,
-    DateTime? CompletedAt);
+    DateTime? CompletedAt,
+    string ForwardedByName,
+    IReadOnlyList<NoteRecipientDto> Forwards);
 
 public record MuralResponse(
     IReadOnlyList<UserNoteDto> Sent,
-    IReadOnlyList<ReceivedNoteDto> Received);
+    IReadOnlyList<ReceivedNoteDto> Received,
+    IReadOnlyList<UserNoteDto> Concluded);
+
+public record ForwardNoteRequest(int[]? RecipientUserIds);
 
 public record MuralSummaryDto(int UnreadReceived, int UnseenCompletions);
 

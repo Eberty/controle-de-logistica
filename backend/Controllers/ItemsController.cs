@@ -119,7 +119,7 @@ public class ItemsController : AuthenticatedControllerBase
     [RequestSizeLimit(MaxItemRequestBodyBytes)]
     public async Task<IActionResult> Create([FromBody] ItemUpsertRequest request)
     {
-        var (ok, currentUser, error) = await TryGetAdminUserAsync();
+        var (ok, currentUser, error) = await TryGetCurrentUserAsync();
         if (!ok) return error!;
 
         var (normalizedItem, validationError) = await ValidateAndNormalizeItemAsync(request);
@@ -273,7 +273,7 @@ public class ItemsController : AuthenticatedControllerBase
             return StatusCode(500, new { message = "Ocorreu um erro inesperado ao salvar o item. Tente novamente." });
         }
 
-        return Ok(item);
+        return Created($"/api/items/{item.Id}", item);
     }
 
     [HttpPut("{id:int}")]

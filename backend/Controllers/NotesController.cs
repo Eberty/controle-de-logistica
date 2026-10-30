@@ -71,6 +71,7 @@ public class NotesController : AuthenticatedControllerBase
             CreatedAt = now
         }));
         await Context.SaveChangesAsync();
+        await SyncNoteCalendarEntryAsync(note);
         if (fields.Recipients.Count > 0)
             await LogMuralAsync(currentUser, AuditActions.Send, note, $"Anotação enviada para: {RecipientNames(fields.Recipients)}.");
         await transaction.CommitAsync();
@@ -88,6 +89,9 @@ public class NotesController : AuthenticatedControllerBase
         var note = await Context.UserNotes.FirstOrDefaultAsync(x => x.Id == id && x.UserId == currentUser.Id);
         if (note is null)
             return NotFound(new { message = "Anotação não encontrada." });
+
+        if (note.ConcludedAt is not null)
+            return Conflict(new { message = ConcludedNoteMessage });
 
         var (fields, validationError) = await ValidateNoteFieldsAsync(request, currentUser, note.Tags);
         if (validationError is not null)
@@ -127,6 +131,7 @@ public class NotesController : AuthenticatedControllerBase
             CreatedAt = now
         }));
         await Context.SaveChangesAsync();
+        await SyncNoteCalendarEntryAsync(note);
 
         var details = new List<string>();
         if (addedRecipients.Count > 0)
@@ -160,7 +165,13 @@ public class NotesController : AuthenticatedControllerBase
         if (note is null)
             return NotFound(new { message = "Anotação não encontrada." });
 
+        if (note.ConcludedAt is not null)
+            return Conflict(new { message = ConcludedNoteMessage });
+
         await using var transaction = await Context.Database.BeginTransactionAsync();
+        await Context.CalendarEntries
+            .Where(x => x.NoteId == note.Id)
+            .ExecuteDeleteAsync();
         var removedRecipients = await Context.UserNoteRecipients
             .Where(x => x.NoteId == note.Id)
             .ExecuteDeleteAsync();

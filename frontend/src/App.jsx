@@ -48,6 +48,7 @@ const INVENTORY_COLUMNS = [
 ];
 const INVENTORY_COLUMNS_LS_KEY = "ams_inventory_columns";
 const MURAL_TAB_LS_KEY = "ams_mural_tab";
+const muralTabs = ["sent", "received", "concluded"];
 const VIEW_TITLES = {
   items: "Cadastro de itens",
   search: "Inventário",
@@ -383,13 +384,16 @@ function App() {
   const [muralNotes, setMuralNotes] = useState(emptyMural);
   const [muralTab, setMuralTab] = useState(() => {
     try {
-      return localStorage.getItem(MURAL_TAB_LS_KEY) === "sent" ? "sent" : "received";
+      const savedTab = localStorage.getItem(MURAL_TAB_LS_KEY);
+      return muralTabs.includes(savedTab) ? savedTab : "received";
     } catch {
       return "received";
     }
   });
   const [muralSummary, setMuralSummary] = useState(emptyMuralSummary);
   const [openedReceivedNoteIds, setOpenedReceivedNoteIds] = useState([]);
+  const [forwardingNote, setForwardingNote] = useState(null);
+  const [openedConcludedKeys, setOpenedConcludedKeys] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [noteTags, setNoteTags] = useState([]);
   const [noteTagForm, setNoteTagForm] = useState(emptyNoteTagForm);
@@ -1194,6 +1198,8 @@ function App() {
     setMuralSummary(emptyMuralSummary);
     muralSummaryRef.current = emptyMuralSummary;
     setOpenedReceivedNoteIds([]);
+    setForwardingNote(null);
+    setOpenedConcludedKeys([]);
     closeConfirmDialog(false);
     setNoteTags([]);
     setNoteTagForm(emptyNoteTagForm);
@@ -1854,6 +1860,107 @@ function App() {
     }
   }
 
+  function toggleForwardPanel(receivedNote) {
+    setForwardingNote((current) => (current?.noteId === receivedNote.id ? null : { noteId: receivedNote.id, userIds: [] }));
+  }
+
+  function forwardOptions(receivedNote) {
+    const forwardedIds = receivedNote.forwards.map((forward) => forward.userId);
+    return noteRecipientOptions.filter(
+      (option) => option.id !== receivedNote.authorUserId && !forwardedIds.includes(option.id),
+    );
+  }
+
+  function toggleForwardRecipient(userId) {
+    setForwardingNote((current) =>
+      current
+        ? {
+            ...current,
+            userIds: current.userIds.includes(userId)
+              ? current.userIds.filter((id) => id !== userId)
+              : [...current.userIds, userId],
+          }
+        : current,
+    );
+  }
+
+  async function handleForwardNote(receivedNote) {
+    if (!forwardingNote?.userIds.length) {
+      setMessage("Selecione para quem encaminhar a anotação.");
+      return;
+    }
+
+    setBusy(true);
+    setMessage("");
+
+    try {
+      await request(`/api/mural/${receivedNote.id}/forward`, {
+        token,
+        method: "POST",
+        body: { recipientUserIds: forwardingNote.userIds },
+      });
+      setForwardingNote(null);
+      setMessage("Anotação encaminhada.", "success");
+      await loadMural();
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConcludeNote(sentNote) {
+    const confirmed = await confirmAction({
+      eyebrow: "Mural",
+      title: "Concluir anotação?",
+      text: `A anotação "${sentNote.title}" vai para a aba Concluídos de quem enviou e de quem recebeu. Ela não poderá ser editada nem encaminhada até ser reaberta.`,
+      confirmLabel: "Concluir",
+    });
+    if (!confirmed) return;
+
+    setBusy(true);
+    setMessage("");
+
+    try {
+      await request(`/api/mural/${sentNote.id}/conclude`, { token, method: "POST" });
+      setMessage("Anotação concluída e movida para Concluídos.", "success");
+      await Promise.all([loadMural(), loadNotes(), loadCalendar()]);
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleReopenNote(concludedNote) {
+    const confirmed = await confirmAction({
+      eyebrow: "Mural",
+      title: "Reabrir anotação?",
+      text: `A anotação "${concludedNote.title}" volta para Enviados e Recebidos e pode ser editada e encaminhada de novo.`,
+      confirmLabel: "Reabrir",
+    });
+    if (!confirmed) return;
+
+    setBusy(true);
+    setMessage("");
+
+    try {
+      await request(`/api/mural/${concludedNote.id}/reopen`, { token, method: "POST" });
+      setMessage("Anotação reaberta.", "success");
+      await Promise.all([loadMural(), loadNotes(), loadCalendar()]);
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleConcludedNote(key) {
+    setOpenedConcludedKeys((current) =>
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+    );
+  }
+
   function handleSelectMuralTab(tab) {
     setMuralTab(tab);
     try {
@@ -1968,7 +2075,7 @@ function App() {
         setActiveView(noteEditReturnView);
       }
       setNoteEditReturnView(null);
-      await Promise.all([loadNotes(), loadMural()]);
+      await Promise.all([loadNotes(), loadMural(), loadCalendar()]);
     } catch (error) {
       handleRequestError(error);
     } finally {
@@ -2036,7 +2143,7 @@ function App() {
         setNoteEditReturnView(null);
       }
       setMessage("Anotação excluída.", "success");
-      await Promise.all([loadNotes(), loadMural()]);
+      await Promise.all([loadNotes(), loadMural(), loadCalendar()]);
     } catch (error) {
       handleRequestError(error);
     } finally {
@@ -2045,7 +2152,7 @@ function App() {
   }
 
   function canManageCalendarEntry(entry) {
-    return isAdmin || entry.createdByUserId === user?.id;
+    return !entry.noteId && (isAdmin || entry.createdByUserId === user?.id);
   }
 
   function openCalendarCreate(dateIso = "", returnToDay = false) {
@@ -2105,6 +2212,11 @@ function App() {
             <strong>Criado por:</strong> {entry.authorName}
           </p>
           <small>Criado em {formatDateTime(entry.createdAt)}</small>
+          {entry.noteId ? (
+            <small className="muted">
+              Para mudar a data, edite a anotação. O prazo sai do calendário quando a anotação é concluída.
+            </small>
+          ) : null}
         </div>
         {canManageCalendarEntry(entry) ? (
           <div className="button-row">
@@ -2459,6 +2571,11 @@ function App() {
     (entry) => entry.recipient.userId,
     (entry) => entry.recipient.name,
   );
+  const concludedNoteGroups = groupNotesBy(
+    muralNotes.concluded.flatMap((note) => note.recipients.map((recipient) => ({ note, recipient }))),
+    (entry) => entry.recipient.userId,
+    (entry) => entry.recipient.name,
+  );
   const auditTotalPages = Math.max(1, Math.ceil(auditTimeline.length / auditPageSize));
   const safeAuditPage = Math.min(auditPage, auditTotalPages);
   const paginatedAuditTimeline = auditTimeline.slice((safeAuditPage - 1) * auditPageSize, safeAuditPage * auditPageSize);
@@ -2724,15 +2841,13 @@ function App() {
         </div>
 
         <nav className="side-nav" aria-label="Menu principal">
-          {isAdmin ? (
-            <button
-              className={activeView === "items" ? "active" : ""}
-              type="button"
-              onClick={() => navigateTo("items")}
-            >
-              Cadastro
-            </button>
-          ) : null}
+          <button
+            className={activeView === "items" ? "active" : ""}
+            type="button"
+            onClick={() => navigateTo("items")}
+          >
+            Cadastro
+          </button>
           <button
             className={activeView === "search" ? "active" : ""}
             type="button"
@@ -3014,9 +3129,9 @@ function App() {
           <div className="section-heading">
             <div>
               <p className="eyebrow">Inventário</p>
-              <h2>{isAdmin ? "Dados do item" : "Não é possível cadastrar itens"}</h2>
+              <h2>Dados do item</h2>
             </div>
-            {isAdmin && !editingItemId ? (
+            {!editingItemId ? (
               <div className="section-actions">
                 <button
                   className="ghost"
@@ -3033,81 +3148,81 @@ function App() {
             ) : null}
           </div>
 
-          {isAdmin ? (
-            <form className="form-grid" onSubmit={handleSaveItem}>
+          <form className="form-grid" onSubmit={handleSaveItem}>
+            <label>
+              Nome do item
+              <input
+                value={itemForm.name}
+                onChange={(event) => setItemForm((current) => ({ ...current, name: event.target.value }))}
+                placeholder="Insira o nome do item"
+                maxLength={300}
+                required
+              />
+            </label>
+            <label>
+              Quantidade
+              <NumberInput
+                value={itemForm.quantity}
+                min={1}
+                onValueChange={(value) => setItemForm((current) => ({ ...current, quantity: value }))}
+                required
+              />
+            </label>
+            <label>
+              Natureza
+              <select
+                value={itemForm.nature}
+                onChange={(event) =>
+                  setItemForm((current) => ({
+                    ...current,
+                    nature: event.target.value,
+                    assetTag: event.target.value === permanentNature ? current.assetTag : "",
+                  }))
+                }
+                required
+              >
+                <option value="">Selecione</option>
+                {itemNatureOptions.map((nature) => (
+                  <option key={nature} value={nature}>
+                    {nature}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {itemForm.nature === permanentNature ? (
               <label>
-                Nome do item
+                Patrimônio
                 <input
-                  value={itemForm.name}
-                  onChange={(event) => setItemForm((current) => ({ ...current, name: event.target.value }))}
-                  placeholder="Insira o nome do item"
-                  maxLength={300}
-                  required
-                />
-              </label>
-              <label>
-                Quantidade
-                <NumberInput
-                  value={itemForm.quantity}
-                  min={1}
-                  onValueChange={(value) => setItemForm((current) => ({ ...current, quantity: value }))}
-                  required
-                />
-              </label>
-              <label>
-                Natureza
-                <select
-                  value={itemForm.nature}
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={itemForm.assetTag}
                   onChange={(event) =>
                     setItemForm((current) => ({
                       ...current,
-                      nature: event.target.value,
-                      assetTag: event.target.value === permanentNature ? current.assetTag : "",
+                      assetTag: event.target.value.replace(/\D/g, ""),
                     }))
                   }
+                  placeholder="Informar apenas números"
+                />
+              </label>
+            ) : null}
+            <label>
+              Localização
+              <div className="location-select-row">
+                <select
+                  value={itemForm.location}
+                  onChange={(event) => setItemForm((current) => ({ ...current, location: event.target.value }))}
                   required
                 >
                   <option value="">Selecione</option>
-                  {itemNatureOptions.map((nature) => (
-                    <option key={nature} value={nature}>
-                      {nature}
+                  {availableLocationOptions.map((location) => (
+                    <option key={location} value={location}>
+                      {location}
                     </option>
                   ))}
                 </select>
-              </label>
-              {itemForm.nature === permanentNature ? (
-                <label>
-                  Patrimônio
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    value={itemForm.assetTag}
-                    onChange={(event) =>
-                      setItemForm((current) => ({
-                        ...current,
-                        assetTag: event.target.value.replace(/\D/g, ""),
-                      }))
-                    }
-                    placeholder="Informar apenas números"
-                  />
-                </label>
-              ) : null}
-              <label>
-                Localização
-                <div className="location-select-row">
-                  <select
-                    value={itemForm.location}
-                    onChange={(event) => setItemForm((current) => ({ ...current, location: event.target.value }))}
-                    required
-                  >
-                    <option value="">Selecione</option>
-                    {availableLocationOptions.map((location) => (
-                      <option key={location} value={location}>
-                        {location}
-                      </option>
-                    ))}
-                  </select>
+                {isAdmin ? (
                   <button
                     className="icon-button location-add-toggle"
                     type="button"
@@ -3126,170 +3241,166 @@ function App() {
                   >
                     <span>{newLocationForm.open ? "-" : "+"}</span>
                   </button>
+                ) : null}
+              </div>
+            </label>
+            <label>
+              Estado de conservação
+              <select
+                value={itemForm.condition}
+                onChange={(event) => setItemForm((current) => ({ ...current, condition: event.target.value }))}
+                required
+              >
+                <option value="">Selecione</option>
+                {itemConditionOptions.map((condition) => (
+                  <option key={condition} value={condition}>
+                    {condition}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {newLocationForm.open ? (
+              <div className="full-width location-add-row">
+                <div className="location-create-row">
+                  <label>
+                    Nova localização
+                    <input
+                      value={newLocationForm.value}
+                      onChange={(event) =>
+                        setNewLocationForm((current) => ({ ...current, value: event.target.value }))
+                      }
+                      placeholder="Digite a nova localização"
+                    />
+                  </label>
+                  <button
+                    className="primary"
+                    type="button"
+                    onClick={handleAddLocation}
+                    disabled={newLocationForm.saving}
+                  >
+                    Adicionar
+                  </button>
                 </div>
-              </label>
-              <label>
-                Estado de conservação
-                <select
-                  value={itemForm.condition}
-                  onChange={(event) => setItemForm((current) => ({ ...current, condition: event.target.value }))}
-                  required
-                >
-                  <option value="">Selecione</option>
-                  {itemConditionOptions.map((condition) => (
-                    <option key={condition} value={condition}>
-                      {condition}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {newLocationForm.open ? (
-                <div className="full-width location-add-row">
-                  <div className="location-create-row">
+                {customLocations.length ? (
+                  <div className={`location-manage-row${newLocationForm.renaming ? " is-renaming" : ""}`}>
                     <label>
-                      Nova localização
-                      <input
-                        value={newLocationForm.value}
+                      <span title="Localizações predefinidas não podem ser alteradas.">
+                        Editar localizações adicionadas
+                      </span>
+                      <select
+                        value={newLocationForm.editName}
                         onChange={(event) =>
-                          setNewLocationForm((current) => ({ ...current, value: event.target.value }))
+                          setNewLocationForm((current) => ({
+                            ...current,
+                            editName: event.target.value,
+                            editValue: event.target.value,
+                            renaming: false,
+                          }))
                         }
-                        placeholder="Digite a nova localização"
-                      />
+                      >
+                        <option value="">Selecionar</option>
+                        {customLocationOptions.map((location) => (
+                          <option key={location} value={location}>
+                            {location}
+                          </option>
+                        ))}
+                      </select>
                     </label>
+                    {newLocationForm.renaming ? (
+                      <label>
+                        Novo nome
+                        <input
+                          value={newLocationForm.editValue}
+                          onChange={(event) =>
+                            setNewLocationForm((current) => ({ ...current, editValue: event.target.value }))
+                          }
+                          placeholder="Digite o novo nome"
+                        />
+                      </label>
+                    ) : null}
                     <button
-                      className="primary"
+                      className="ghost"
                       type="button"
-                      onClick={handleAddLocation}
-                      disabled={newLocationForm.saving}
+                      onClick={handleRenameLocation}
+                      disabled={newLocationForm.editing || !newLocationForm.editName}
                     >
-                      Adicionar
+                      {newLocationForm.renaming ? "Salvar" : "Renomear"}
+                    </button>
+                    <button
+                      className="ghost danger"
+                      type="button"
+                      onClick={handleRemoveLocation}
+                      disabled={newLocationForm.removing || !newLocationForm.editName}
+                    >
+                      Excluir
                     </button>
                   </div>
-                  {customLocations.length ? (
-                    <div className={`location-manage-row${newLocationForm.renaming ? " is-renaming" : ""}`}>
-                      <label>
-                        <span title="Localizações predefinidas não podem ser alteradas.">
-                          Editar localizações adicionadas
-                        </span>
-                        <select
-                          value={newLocationForm.editName}
-                          onChange={(event) =>
-                            setNewLocationForm((current) => ({
-                              ...current,
-                              editName: event.target.value,
-                              editValue: event.target.value,
-                              renaming: false,
-                            }))
-                          }
-                        >
-                          <option value="">Selecionar</option>
-                          {customLocationOptions.map((location) => (
-                            <option key={location} value={location}>
-                              {location}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      {newLocationForm.renaming ? (
-                        <label>
-                          Novo nome
-                          <input
-                            value={newLocationForm.editValue}
-                            onChange={(event) =>
-                              setNewLocationForm((current) => ({ ...current, editValue: event.target.value }))
-                            }
-                            placeholder="Digite o novo nome"
-                          />
-                        </label>
-                      ) : null}
-                      <button
-                        className="ghost"
-                        type="button"
-                        onClick={handleRenameLocation}
-                        disabled={newLocationForm.editing || !newLocationForm.editName}
-                      >
-                        {newLocationForm.renaming ? "Salvar" : "Renomear"}
-                      </button>
-                      <button
-                        className="ghost danger"
-                        type="button"
-                        onClick={handleRemoveLocation}
-                        disabled={newLocationForm.removing || !newLocationForm.editName}
-                      >
-                        Excluir
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="full-width notes-photo-row">
-                <div className={`photo-field${itemForm.hasPhoto ? " has-photo" : ""}`}>
-                  <span>Foto do item</span>
-                  <label
-                    className="photo-dropzone"
-                    title="Arraste ou selecione uma foto para adicionar ou substituir"
-                    onDrop={handleItemPhotoDrop}
-                    onDragOver={(event) => event.preventDefault()}
-                  >
-                    {itemFormPhotoPreviewUrl ? (
-                      <img className="item-photo-preview" src={itemFormPhotoPreviewUrl} alt="Prévia da foto do item" />
-                    ) : itemForm.hasPhoto ? (
-                      <span>Prévia da foto do item</span>
-                    ) : (
-                      <span>Arraste ou selecione</span>
-                    )}
-                    <input ref={photoInputRef} type="file" accept="image/*" onChange={handleItemPhotoChange} />
-                  </label>
-                  {itemForm.hasPhoto ? (
-                    <button className="ghost photo-remove-button" type="button" onClick={handleRemoveItemPhoto}>
-                      Remover foto
-                    </button>
-                  ) : null}
-                </div>
-                <label>
-                  Observações
-                  <textarea
-                    className="item-notes-textarea"
-                    rows="2"
-                    value={itemForm.notes}
-                    onChange={(event) => setItemForm((current) => ({ ...current, notes: event.target.value }))}
-                    placeholder="Informações adicionais sobre o item"
-                    maxLength={5000}
-                  />
-                </label>
+                ) : null}
               </div>
-              {editingItemId ? (
-                <label className="checkbox-field full-width">
-                  <input
-                    type="checkbox"
-                    checked={itemForm.isDischarged}
-                    onChange={(event) =>
-                      setItemForm((current) => ({ ...current, isDischarged: event.target.checked }))
-                    }
-                  />
-                  Item descargueado
+            ) : null}
+            <div className="full-width notes-photo-row">
+              <div className={`photo-field${itemForm.hasPhoto ? " has-photo" : ""}`}>
+                <span>Foto do item</span>
+                <label
+                  className="photo-dropzone"
+                  title="Arraste ou selecione uma foto para adicionar ou substituir"
+                  onDrop={handleItemPhotoDrop}
+                  onDragOver={(event) => event.preventDefault()}
+                >
+                  {itemFormPhotoPreviewUrl ? (
+                    <img className="item-photo-preview" src={itemFormPhotoPreviewUrl} alt="Prévia da foto do item" />
+                  ) : itemForm.hasPhoto ? (
+                    <span>Prévia da foto do item</span>
+                  ) : (
+                    <span>Arraste ou selecione</span>
+                  )}
+                  <input ref={photoInputRef} type="file" accept="image/*" onChange={handleItemPhotoChange} />
                 </label>
-              ) : null}
-              <div className="button-row">
-                <button className="primary" type="submit" disabled={busy}>
-                  {editingItemId ? "Salvar alterações" : "Cadastrar item"}
-                </button>
-                {editingItemId ? (
-                  <button
-                    className="ghost"
-                    type="button"
-                    onClick={handleCancelItemEdit}
-                  >
-                    Cancelar edição
+                {itemForm.hasPhoto ? (
+                  <button className="ghost photo-remove-button" type="button" onClick={handleRemoveItemPhoto}>
+                    Remover foto
                   </button>
                 ) : null}
               </div>
-            </form>
-          ) : (
-            <p className="muted wide-text">
-              O usuário logado pode consultar o inventário e registrar transferências, mas não alterar cadastro de itens.
-            </p>
-          )}
+              <label>
+                Observações
+                <textarea
+                  className="item-notes-textarea"
+                  rows="2"
+                  value={itemForm.notes}
+                  onChange={(event) => setItemForm((current) => ({ ...current, notes: event.target.value }))}
+                  placeholder="Informações adicionais sobre o item"
+                  maxLength={5000}
+                />
+              </label>
+            </div>
+            {editingItemId ? (
+              <label className="checkbox-field full-width">
+                <input
+                  type="checkbox"
+                  checked={itemForm.isDischarged}
+                  onChange={(event) =>
+                    setItemForm((current) => ({ ...current, isDischarged: event.target.checked }))
+                  }
+                />
+                Item descargueado
+              </label>
+            ) : null}
+            <div className="button-row">
+              <button className="primary" type="submit" disabled={busy}>
+                {editingItemId ? "Salvar alterações" : "Cadastrar item"}
+              </button>
+              {editingItemId ? (
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={handleCancelItemEdit}
+                >
+                  Cancelar edição
+                </button>
+              ) : null}
+            </div>
+          </form>
           </article>
         ) : null}
 
@@ -3839,26 +3950,32 @@ function App() {
                       Criado por {noteItem.authorName} · {formatDateTime(noteItem.createdAt)}
                     </small>
                   </div>
-                  <div className="row-actions">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      onClick={() => handleEditNote(noteItem)}
-                      title="Editar"
-                      aria-label="Editar"
-                    >
-                      <Icon type="edit" />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button danger"
-                      onClick={() => handleDeleteNote(noteItem.id)}
-                      title="Excluir"
-                      aria-label="Excluir"
-                    >
-                      <Icon type="trash" />
-                    </button>
-                  </div>
+                  {noteItem.concludedAt ? (
+                    <div className="row-actions">
+                      <span className="note-status done">Concluída</span>
+                    </div>
+                  ) : (
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => handleEditNote(noteItem)}
+                        title="Editar"
+                        aria-label="Editar"
+                      >
+                        <Icon type="edit" />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button danger"
+                        onClick={() => handleDeleteNote(noteItem.id)}
+                        title="Excluir"
+                        aria-label="Excluir"
+                      >
+                        <Icon type="trash" />
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div className="note-meta">
                   <small>
@@ -3866,9 +3983,15 @@ function App() {
                       ? `Enviada para: ${noteItem.recipients.map((recipient) => recipient.name).join(", ")}`
                       : "Privada (sem destinatários)"}
                   </small>
+                  {noteItem.concludedAt ? (
+                    <small>
+                      Concluída por {noteItem.concludedByName} em {formatDateTime(noteItem.concludedAt)}
+                    </small>
+                  ) : null}
                   {renderNoteDueDate(
                     noteItem.dueDate,
-                    noteItem.recipients.length > 0 && noteItem.recipients.every((recipient) => recipient.completedAt),
+                    Boolean(noteItem.concludedAt) ||
+                      (noteItem.recipients.length > 0 && noteItem.recipients.every((recipient) => recipient.completedAt)),
                   )}
                   {noteItem.seiNumber || noteItem.seiProcessId ? (
                     <small>
@@ -3929,6 +4052,15 @@ function App() {
                   <span className="nav-badge">{muralSummary.unreadReceived}</span>
                 ) : null}
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={muralTab === "concluded"}
+                className={muralTab === "concluded" ? "active" : ""}
+                onClick={() => handleSelectMuralTab("concluded")}
+              >
+                Concluídos
+              </button>
             </div>
 
             {muralTab === "received" ? (
@@ -3966,10 +4098,27 @@ function App() {
                                 </div>
                               ) : null}
                             </div>
-                            {receivedNote.dueDate || (isOpen && (receivedNote.completedAt || receivedNote.seiNumber || receivedNote.seiProcessId)) ? (
+                            {receivedNote.dueDate ||
+                            receivedNote.forwardedByName ||
+                            (isOpen &&
+                              (receivedNote.completedAt ||
+                                receivedNote.forwards.length > 0 ||
+                                receivedNote.seiNumber ||
+                                receivedNote.seiProcessId)) ? (
                               <div className="note-meta">
+                                {receivedNote.forwardedByName ? (
+                                  <small>Encaminhada por {receivedNote.forwardedByName}</small>
+                                ) : null}
                                 {isOpen && receivedNote.completedAt ? (
                                   <small>Marcada como pronta em {formatDateTime(receivedNote.completedAt)}</small>
+                                ) : null}
+                                {isOpen && receivedNote.forwards.length > 0 ? (
+                                  <small>
+                                    Você encaminhou para:{" "}
+                                    {receivedNote.forwards
+                                      .map((forward) => (forward.completedAt ? `${forward.name} (pronto)` : forward.name))
+                                      .join(", ")}
+                                  </small>
                                 ) : null}
                                 {renderNoteDueDate(receivedNote.dueDate, Boolean(receivedNote.completedAt))}
                                 {isOpen && (receivedNote.seiNumber || receivedNote.seiProcessId) ? (
@@ -3983,8 +4132,8 @@ function App() {
                               <>
                                 <p className="item-notes-display">{receivedNote.content}</p>
                                 <TagList tags={receivedNote.tags} colors={noteTagColors} />
-                                {receivedNote.completedAt ? null : (
-                                  <div className="button-row">
+                                <div className="button-row">
+                                  {receivedNote.completedAt ? null : (
                                     <button
                                       className="primary"
                                       type="button"
@@ -3993,8 +4142,50 @@ function App() {
                                     >
                                       Pronto
                                     </button>
+                                  )}
+                                  <button
+                                    className="ghost"
+                                    type="button"
+                                    aria-expanded={forwardingNote?.noteId === receivedNote.id}
+                                    onClick={() => toggleForwardPanel(receivedNote)}
+                                  >
+                                    Encaminhar
+                                  </button>
+                                </div>
+                                {forwardingNote?.noteId === receivedNote.id ? (
+                                  <div className="forward-panel">
+                                    <span>Encaminhar para</span>
+                                    {forwardOptions(receivedNote).length === 0 ? (
+                                      <span className="muted">Não há outros usuários para encaminhar.</span>
+                                    ) : (
+                                      <div className="recipient-picker">
+                                        {forwardOptions(receivedNote).map((option) => (
+                                          <label className="checkbox-field" key={option.id}>
+                                            <input
+                                              type="checkbox"
+                                              checked={forwardingNote.userIds.includes(option.id)}
+                                              onChange={() => toggleForwardRecipient(option.id)}
+                                            />
+                                            {option.name}
+                                          </label>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div className="button-row">
+                                      <button
+                                        className="primary"
+                                        type="button"
+                                        disabled={busy || forwardingNote.userIds.length === 0}
+                                        onClick={() => handleForwardNote(receivedNote)}
+                                      >
+                                        Enviar
+                                      </button>
+                                      <button className="ghost" type="button" onClick={() => setForwardingNote(null)}>
+                                        Cancelar
+                                      </button>
+                                    </div>
                                   </div>
-                                )}
+                                ) : null}
                               </>
                             ) : (
                               <div className="button-row">
@@ -4009,6 +4200,90 @@ function App() {
                     </div>
                   </section>
                 ))
+              )
+            ) : muralTab === "concluded" ? (
+              concludedNoteGroups.length === 0 ? (
+                <p className="muted wide-text">Nenhuma anotação concluída.</p>
+              ) : (
+                <>
+                  <p className="muted mural-legend">
+                    {isAdmin
+                      ? "Anotações concluídas de todos os usuários, separadas por destinatário. Clique no título para ver o conteúdo."
+                      : "Anotações concluídas que você enviou ou recebeu, separadas por destinatário. Clique no título para ver o conteúdo."}
+                  </p>
+                  {concludedNoteGroups.map((group) => (
+                    <section className="mural-group" key={group.key}>
+                      <h3 className="mural-group-title">
+                        {group.name}
+                        <span className="mural-group-count">{group.entries.length}</span>
+                      </h3>
+                      <div className="concluded-list">
+                        {group.entries.map(({ note: concludedNote, recipient }) => {
+                          const entryKey = `${group.key}-${concludedNote.id}`;
+                          const isOpen = openedConcludedKeys.includes(entryKey);
+                          return (
+                            <article className="content-card note-card concluded-card" key={concludedNote.id}>
+                              <button
+                                className="concluded-title"
+                                type="button"
+                                aria-expanded={isOpen}
+                                onClick={() => toggleConcludedNote(entryKey)}
+                              >
+                                {concludedNote.title}
+                              </button>
+                              {isOpen ? (
+                                <>
+                                  <div className="note-meta">
+                                    <small>
+                                      Criado por {concludedNote.authorName} · {formatDateTime(concludedNote.createdAt)}
+                                    </small>
+                                    {recipient.forwardedByName ? (
+                                      <small>Encaminhada por {recipient.forwardedByName}</small>
+                                    ) : null}
+                                    <small>
+                                      {recipient.completedAt
+                                        ? `Marcada como pronta por ${recipient.name} em ${formatDateTime(recipient.completedAt)}`
+                                        : `Não marcada como pronta por ${recipient.name}`}
+                                    </small>
+                                    <small>
+                                      Concluída por {concludedNote.concludedByName} em{" "}
+                                      {formatDateTime(concludedNote.concludedAt)}
+                                    </small>
+                                    {renderNoteDueDate(concludedNote.dueDate, true)}
+                                    {concludedNote.seiNumber || concludedNote.seiProcessId ? (
+                                      <small>
+                                        SEI:{" "}
+                                        <SeiLink
+                                          number={concludedNote.seiNumber}
+                                          processId={concludedNote.seiProcessId}
+                                          onCopy={handleSeiNumberCopied}
+                                        />
+                                      </small>
+                                    ) : null}
+                                  </div>
+                                  <p className="item-notes-display">{concludedNote.content}</p>
+                                  <TagList tags={concludedNote.tags} colors={noteTagColors} />
+                                  {isAdmin ? (
+                                    <div className="button-row">
+                                      <button
+                                        className="ghost"
+                                        type="button"
+                                        disabled={busy}
+                                        onClick={() => handleReopenNote(concludedNote)}
+                                      >
+                                        Reabrir
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </>
+                              ) : null}
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
+                </>
               )
             ) : sentNoteGroups.length === 0 ? (
               <p className="muted wide-text">
@@ -4055,6 +4330,9 @@ function App() {
                             </div>
                           </div>
                           <div className="note-meta">
+                            {recipient.forwardedByName ? (
+                              <small>Encaminhada por {recipient.forwardedByName}</small>
+                            ) : null}
                             <small>
                               {recipient.completedAt
                                 ? `Marcada como pronta por ${recipient.name} em ${formatDateTime(recipient.completedAt)}`
@@ -4071,6 +4349,18 @@ function App() {
                           </div>
                           <p className="item-notes-display">{sentNote.content}</p>
                           <TagList tags={sentNote.tags} colors={noteTagColors} />
+                          {isAdmin && sentNote.recipients.some((item) => item.completedAt) ? (
+                            <div className="button-row">
+                              <button
+                                className="primary"
+                                type="button"
+                                disabled={busy}
+                                onClick={() => handleConcludeNote(sentNote)}
+                              >
+                                Concluir
+                              </button>
+                            </div>
+                          ) : null}
                         </article>
                       ))}
                     </div>

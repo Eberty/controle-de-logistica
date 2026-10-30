@@ -13,6 +13,8 @@ namespace AssetManagement.Controllers;
 public class CalendarController : AuthenticatedControllerBase
 {
     private const int MaxEntries = 5000;
+    private const string NoteEntryMessage =
+        "Este prazo vem de uma anotação enviada pelo Mural. Altere o prazo na própria anotação.";
 
     private readonly IAuditLogger _auditLogger;
 
@@ -57,6 +59,7 @@ public class CalendarController : AuthenticatedControllerBase
             x.entry.SeiProcessId,
             x.entry.Subject,
             x.entry.Notes,
+            x.entry.NoteId,
             x.entry.CreatedByUserId,
             x.AuthorUsername == null
                 ? x.entry.CreatedByUserName
@@ -119,6 +122,9 @@ public class CalendarController : AuthenticatedControllerBase
         if (!CanManage(currentUser, entry))
             return StatusCode(403, new { message = "Apenas quem criou a anotação pode alterá-la." });
 
+        if (entry.NoteId is not null)
+            return Conflict(new { message = NoteEntryMessage });
+
         var (normalized, validationError) = ValidateAndNormalize(request);
         if (validationError is not null)
             return BadRequest(new { message = validationError });
@@ -156,6 +162,9 @@ public class CalendarController : AuthenticatedControllerBase
 
         if (!CanManage(currentUser, entry))
             return StatusCode(403, new { message = "Apenas quem criou a anotação pode excluí-la." });
+
+        if (entry.NoteId is not null)
+            return Conflict(new { message = NoteEntryMessage });
 
         await using var transaction = await Context.Database.BeginTransactionAsync();
         Context.CalendarEntries.Remove(entry);
@@ -215,6 +224,7 @@ public class CalendarController : AuthenticatedControllerBase
         entry.SeiProcessId,
         entry.Subject,
         entry.Notes,
+        entry.NoteId,
         entry.CreatedByUserId,
         authorName,
         entry.CreatedAt,

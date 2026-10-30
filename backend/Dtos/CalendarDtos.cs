@@ -16,6 +16,7 @@ public record CalendarEntryDto(
     string SeiProcessId,
     string Subject,
     string Notes,
+    int? NoteId,
     int CreatedByUserId,
     string AuthorName,
     DateTime CreatedAt,
