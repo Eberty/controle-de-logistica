@@ -30,12 +30,22 @@ public class CalendarController : AuthenticatedControllerBase
         var (ok, currentUser, error) = await TryGetCurrentUserAsync();
         if (!ok) return error!;
 
-        // Entries added in the calendar are shared; a note deadline shows only to the note author and recipients.
+        // Entries added in the calendar are shared. A note deadline shows to the author of a private note, or to the
+        // sender and recipient of each open delivery (a forwarded delivery hands the deadline over).
+        var userId = currentUser.Id;
         var rows = await Context.CalendarEntries
             .AsNoTracking()
             .Where(x => x.NoteId == null
-                || Context.UserNotes.Any(note => note.Id == x.NoteId && note.UserId == currentUser.Id)
-                || Context.UserNoteRecipients.Any(recipient => recipient.NoteId == x.NoteId && recipient.UserId == currentUser.Id))
+                || Context.UserNotes.Any(note => note.Id == x.NoteId
+                    && note.UserId == userId
+                    && !Context.UserNoteRecipients.Any(recipient => recipient.NoteId == note.Id))
+                || Context.UserNoteRecipients.Any(recipient => recipient.NoteId == x.NoteId
+                    && recipient.ConcludedAt == null
+                    && recipient.ForwardedAt == null
+                    && (recipient.UserId == userId
+                        || recipient.ForwardedByUserId == userId
+                        || (recipient.ForwardedByUserId == null
+                            && Context.UserNotes.Any(note => note.Id == recipient.NoteId && note.UserId == userId)))))
             .GroupJoin(
                 Context.Users.AsNoTracking(),
                 entry => entry.CreatedByUserId,

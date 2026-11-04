@@ -393,6 +393,7 @@ function App() {
   const [openedReceivedNoteIds, setOpenedReceivedNoteIds] = useState([]);
   const [forwardingNote, setForwardingNote] = useState(null);
   const [openedConcludedKeys, setOpenedConcludedKeys] = useState([]);
+  const [concludedSelection, setConcludedSelection] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [noteTags, setNoteTags] = useState([]);
   const [noteTagForm, setNoteTagForm] = useState(emptyNoteTagForm);
@@ -1201,6 +1202,7 @@ function App() {
     setOpenedReceivedNoteIds([]);
     setForwardingNote(null);
     setOpenedConcludedKeys([]);
+    setConcludedSelection(null);
     closeConfirmDialog(false);
     setNoteTags([]);
     setNoteTagForm(emptyNoteTagForm);
@@ -1840,7 +1842,7 @@ function App() {
     const confirmed = await confirmAction({
       eyebrow: "Mural",
       title: "Marcar como pronta?",
-      text: `A anotação "${receivedNote.title}" será devolvida a ${receivedNote.authorName} como pronta.`,
+      text: `A anotação "${receivedNote.title}" será devolvida a ${receivedNote.forwardedByName || receivedNote.authorName} como pronta.`,
       confirmLabel: "Marcar como pronta",
     });
     if (!confirmed) return;
@@ -1864,10 +1866,7 @@ function App() {
   }
 
   function forwardOptions(receivedNote) {
-    const forwardedIds = receivedNote.forwards.map((forward) => forward.userId);
-    return noteRecipientOptions.filter(
-      (option) => option.id !== receivedNote.authorUserId && !forwardedIds.includes(option.id),
-    );
+    return noteRecipientOptions.filter((option) => option.id !== receivedNote.authorUserId);
   }
 
   function toggleForwardRecipient(userId) {
@@ -1899,7 +1898,7 @@ function App() {
         body: { recipientUserIds: forwardingNote.userIds },
       });
       setForwardingNote(null);
-      setMessage("Anotação encaminhada.", "success");
+      setMessage("Anotação encaminhada. Ela agora está nos seus Enviados.", "success");
       await loadMural();
     } catch (error) {
       handleRequestError(error);
@@ -1908,11 +1907,11 @@ function App() {
     }
   }
 
-  async function handleConcludeNote(sentNote) {
+  async function handleConcludeNote(sentNote, recipient) {
     const confirmed = await confirmAction({
       eyebrow: "Mural",
       title: "Concluir anotação?",
-      text: `A anotação "${sentNote.title}" vai para a aba Concluídos de quem enviou e de quem recebeu. Ela não poderá ser editada nem encaminhada até ser reaberta.`,
+      text: `A anotação "${sentNote.title}" vai para a aba Concluídos, sua e de ${recipient.name}. Ela não poderá ser editada nem encaminhada até ser reaberta.`,
       confirmLabel: "Concluir",
     });
     if (!confirmed) return;
@@ -1921,7 +1920,7 @@ function App() {
     setMessage("");
 
     try {
-      await request(`/api/mural/${sentNote.id}/conclude`, { token, method: "POST" });
+      await request(`/api/mural/${sentNote.id}/recipients/${recipient.userId}/conclude`, { token, method: "POST" });
       setMessage("Anotação concluída e movida para Concluídos.", "success");
       await Promise.all([loadMural(), loadNotes(), loadCalendar()]);
     } catch (error) {
@@ -1931,7 +1930,7 @@ function App() {
     }
   }
 
-  async function handleReopenNote(concludedNote) {
+  async function handleReopenNote(concludedNote, recipient) {
     const confirmed = await confirmAction({
       eyebrow: "Mural",
       title: "Reabrir anotação?",
@@ -1944,8 +1943,47 @@ function App() {
     setMessage("");
 
     try {
-      await request(`/api/mural/${concludedNote.id}/reopen`, { token, method: "POST" });
+      await request(`/api/mural/${concludedNote.id}/recipients/${recipient.userId}/reopen`, { token, method: "POST" });
       setMessage("Anotação reaberta.", "success");
+      await Promise.all([loadMural(), loadNotes(), loadCalendar()]);
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleConcludedSelection(entry) {
+    setConcludedSelection((current) => {
+      if (!current) return current;
+      const selected = current.some((item) => item.noteId === entry.noteId && item.userId === entry.userId);
+      return selected
+        ? current.filter((item) => item.noteId !== entry.noteId || item.userId !== entry.userId)
+        : [...current, entry];
+    });
+  }
+
+  async function handleDeleteConcluded() {
+    if (!concludedSelection?.length) {
+      setMessage("Selecione as anotações concluídas que deseja excluir.");
+      return;
+    }
+
+    const confirmed = await confirmAction({
+      eyebrow: "Mural",
+      title: "Excluir anotações concluídas?",
+      text: `${concludedSelection.length} anotação(ões) concluída(s) serão excluídas e não poderão ser recuperadas.`,
+      confirmLabel: "Excluir",
+    });
+    if (!confirmed) return;
+
+    setBusy(true);
+    setMessage("");
+
+    try {
+      await request("/api/mural/concluded/delete", { token, method: "POST", body: { items: concludedSelection } });
+      setConcludedSelection(null);
+      setMessage("Anotações concluídas excluídas.", "success");
       await Promise.all([loadMural(), loadNotes(), loadCalendar()]);
     } catch (error) {
       handleRequestError(error);
@@ -2103,7 +2141,9 @@ function App() {
       seiLink: noteItem.seiProcessId ? buildSeiProcessUrl(noteItem.seiProcessId) : "",
       hasDueDate: Boolean(noteItem.dueDate),
       dueDate: noteItem.dueDate ?? "",
-      recipientUserIds: (noteItem.recipients ?? []).map((recipient) => recipient.userId),
+      recipientUserIds: (noteItem.recipients ?? [])
+        .filter((recipient) => !recipient.forwardedByUserId)
+        .map((recipient) => recipient.userId),
     });
   }
 
@@ -3027,7 +3067,11 @@ function App() {
   const hasInventoryFilters = Object.values(inventoryFilters).some(Boolean);
   const muralPendingCount = muralSummary.unreadReceived + muralSummary.unseenCompletions;
   const noteTagColors = Object.fromEntries(noteTags.map((tag) => [tagColorKey(tag.name), tag.color]));
-  const receivedNoteGroups = groupNotesBy(muralNotes.received, (note) => note.authorUserId, (note) => note.authorName);
+  const receivedNoteGroups = groupNotesBy(
+    muralNotes.received,
+    (note) => note.forwardedByUserId ?? note.authorUserId,
+    (note) => note.forwardedByName || note.authorName,
+  );
   const sentNoteGroups = groupNotesBy(
     muralNotes.sent.flatMap((note) => note.recipients.map((recipient) => ({ note, recipient }))),
     (entry) => entry.recipient.userId,
@@ -3890,27 +3934,25 @@ function App() {
                         >
                           <Icon type="history" />
                         </button>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          onClick={() => handleEditItem(item)}
+                          title="Editar"
+                          aria-label="Editar"
+                        >
+                          <Icon type="edit" />
+                        </button>
                         {isAdmin ? (
-                          <>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              onClick={() => handleEditItem(item)}
-                              title="Editar"
-                              aria-label="Editar"
-                            >
-                              <Icon type="edit" />
-                            </button>
-                            <button
-                              type="button"
-                              className="icon-button danger"
-                              onClick={() => handleDeleteItem(item.id)}
-                              title="Excluir"
-                              aria-label="Excluir"
-                            >
-                              <Icon type="trash" />
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            className="icon-button danger"
+                            onClick={() => handleDeleteItem(item.id)}
+                            title="Excluir"
+                            aria-label="Excluir"
+                          >
+                            <Icon type="trash" />
+                          </button>
                         ) : null}
                       </div>
                     </td>
@@ -4003,7 +4045,13 @@ function App() {
                 <div className="note-meta">
                   <small>
                     {noteItem.recipients.length > 0
-                      ? `Enviada para: ${noteItem.recipients.map((recipient) => recipient.name).join(", ")}`
+                      ? `Enviada para: ${noteItem.recipients
+                          .map((recipient) =>
+                            recipient.forwardedByName
+                              ? `${recipient.name} (encaminhada por ${recipient.forwardedByName})`
+                              : recipient.name,
+                          )
+                          .join(", ")}`
                       : "Privada (sem destinatários)"}
                   </small>
                   {noteItem.concludedAt ? (
@@ -4123,25 +4171,13 @@ function App() {
                             </div>
                             {receivedNote.dueDate ||
                             receivedNote.forwardedByName ||
-                            (isOpen &&
-                              (receivedNote.completedAt ||
-                                receivedNote.forwards.length > 0 ||
-                                receivedNote.seiNumber ||
-                                receivedNote.seiProcessId)) ? (
+                            (isOpen && (receivedNote.completedAt || receivedNote.seiNumber || receivedNote.seiProcessId)) ? (
                               <div className="note-meta">
                                 {receivedNote.forwardedByName ? (
                                   <small>Encaminhada por {receivedNote.forwardedByName}</small>
                                 ) : null}
                                 {isOpen && receivedNote.completedAt ? (
                                   <small>Marcada como pronta em {formatDateTime(receivedNote.completedAt)}</small>
-                                ) : null}
-                                {isOpen && receivedNote.forwards.length > 0 ? (
-                                  <small>
-                                    Você encaminhou para:{" "}
-                                    {receivedNote.forwards
-                                      .map((forward) => (forward.completedAt ? `${forward.name} (pronto)` : forward.name))
-                                      .join(", ")}
-                                  </small>
                                 ) : null}
                                 {renderNoteDueDate(receivedNote.dueDate, Boolean(receivedNote.completedAt))}
                                 {isOpen && (receivedNote.seiNumber || receivedNote.seiProcessId) ? (
@@ -4155,8 +4191,8 @@ function App() {
                               <>
                                 <p className="item-notes-display">{receivedNote.content}</p>
                                 <TagList tags={receivedNote.tags} colors={noteTagColors} />
-                                <div className="button-row">
-                                  {receivedNote.completedAt ? null : (
+                                {receivedNote.completedAt ? null : (
+                                  <div className="button-row">
                                     <button
                                       className="primary"
                                       type="button"
@@ -4165,16 +4201,16 @@ function App() {
                                     >
                                       Pronto
                                     </button>
-                                  )}
-                                  <button
-                                    className="ghost"
-                                    type="button"
-                                    aria-expanded={forwardingNote?.noteId === receivedNote.id}
-                                    onClick={() => toggleForwardPanel(receivedNote)}
-                                  >
-                                    Encaminhar
-                                  </button>
-                                </div>
+                                    <button
+                                      className="ghost"
+                                      type="button"
+                                      aria-expanded={forwardingNote?.noteId === receivedNote.id}
+                                      onClick={() => toggleForwardPanel(receivedNote)}
+                                    >
+                                      Encaminhar
+                                    </button>
+                                  </div>
+                                )}
                                 {forwardingNote?.noteId === receivedNote.id ? (
                                   <div className="forward-panel">
                                     <span>Encaminhar para</span>
@@ -4234,6 +4270,29 @@ function App() {
                       ? "Anotações concluídas de todos os usuários, separadas por destinatário. Clique no título para ver o conteúdo."
                       : "Anotações concluídas que você enviou ou recebeu, separadas por destinatário. Clique no título para ver o conteúdo."}
                   </p>
+                  {isAdmin ? (
+                    <div className="button-row concluded-actions">
+                      {concludedSelection ? (
+                        <>
+                          <button
+                            className="ghost danger"
+                            type="button"
+                            disabled={busy || concludedSelection.length === 0}
+                            onClick={handleDeleteConcluded}
+                          >
+                            Excluir selecionadas ({concludedSelection.length})
+                          </button>
+                          <button className="ghost" type="button" onClick={() => setConcludedSelection(null)}>
+                            Cancelar
+                          </button>
+                        </>
+                      ) : (
+                        <button className="ghost" type="button" onClick={() => setConcludedSelection([])}>
+                          Excluir
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
                   {concludedNoteGroups.map((group) => (
                     <section className="mural-group" key={group.key}>
                       <h3 className="mural-group-title">
@@ -4246,14 +4305,28 @@ function App() {
                           const isOpen = openedConcludedKeys.includes(entryKey);
                           return (
                             <article className="content-card note-card concluded-card" key={concludedNote.id}>
-                              <button
-                                className="concluded-title"
-                                type="button"
-                                aria-expanded={isOpen}
-                                onClick={() => toggleConcludedNote(entryKey)}
-                              >
-                                {concludedNote.title}
-                              </button>
+                              <div className="concluded-title-row">
+                                {concludedSelection ? (
+                                  <input
+                                    type="checkbox"
+                                    aria-label={`Selecionar ${concludedNote.title}`}
+                                    checked={concludedSelection.some(
+                                      (item) => item.noteId === concludedNote.id && item.userId === recipient.userId,
+                                    )}
+                                    onChange={() =>
+                                      toggleConcludedSelection({ noteId: concludedNote.id, userId: recipient.userId })
+                                    }
+                                  />
+                                ) : null}
+                                <button
+                                  className="concluded-title"
+                                  type="button"
+                                  aria-expanded={isOpen}
+                                  onClick={() => toggleConcludedNote(entryKey)}
+                                >
+                                  {concludedNote.title}
+                                </button>
+                              </div>
                               {isOpen ? (
                                 <>
                                   <div className="note-meta">
@@ -4269,8 +4342,7 @@ function App() {
                                         : `Não marcada como pronta por ${recipient.name}`}
                                     </small>
                                     <small>
-                                      Concluída por {concludedNote.concludedByName} em{" "}
-                                      {formatDateTime(concludedNote.concludedAt)}
+                                      Concluída por {recipient.concludedByName} em {formatDateTime(recipient.concludedAt)}
                                     </small>
                                     {renderNoteDueDate(concludedNote.dueDate, true)}
                                     {concludedNote.seiNumber || concludedNote.seiProcessId ? (
@@ -4286,13 +4358,13 @@ function App() {
                                   </div>
                                   <p className="item-notes-display">{concludedNote.content}</p>
                                   <TagList tags={concludedNote.tags} colors={noteTagColors} />
-                                  {isAdmin ? (
+                                  {isAdmin || (recipient.forwardedByUserId ?? concludedNote.authorUserId) === user?.id ? (
                                     <div className="button-row">
                                       <button
                                         className="ghost"
                                         type="button"
                                         disabled={busy}
-                                        onClick={() => handleReopenNote(concludedNote)}
+                                        onClick={() => handleReopenNote(concludedNote, recipient)}
                                       >
                                         Reabrir
                                       </button>
@@ -4341,21 +4413,21 @@ function App() {
                             </div>
                             <div className="row-actions">
                               {recipient.completedAt ? <span className="note-status done">Pronto</span> : null}
-                              <button
-                                type="button"
-                                className="icon-button"
-                                onClick={() => handleEditMuralNote(sentNote)}
-                                title="Editar"
-                                aria-label="Editar"
-                              >
-                                <Icon type="edit" />
-                              </button>
+                              {sentNote.authorUserId === user?.id ? (
+                                <button
+                                  type="button"
+                                  className="icon-button"
+                                  onClick={() => handleEditMuralNote(sentNote)}
+                                  title="Editar"
+                                  aria-label="Editar"
+                                >
+                                  <Icon type="edit" />
+                                </button>
+                              ) : null}
                             </div>
                           </div>
                           <div className="note-meta">
-                            {recipient.forwardedByName ? (
-                              <small>Encaminhada por {recipient.forwardedByName}</small>
-                            ) : null}
+                            {recipient.forwardedByUserId ? <small>Encaminhada por você</small> : null}
                             <small>
                               {recipient.completedAt
                                 ? `Marcada como pronta por ${recipient.name} em ${formatDateTime(recipient.completedAt)}`
@@ -4372,13 +4444,13 @@ function App() {
                           </div>
                           <p className="item-notes-display">{sentNote.content}</p>
                           <TagList tags={sentNote.tags} colors={noteTagColors} />
-                          {isAdmin && sentNote.recipients.some((item) => item.completedAt) ? (
+                          {recipient.completedAt ? (
                             <div className="button-row">
                               <button
                                 className="primary"
                                 type="button"
                                 disabled={busy}
-                                onClick={() => handleConcludeNote(sentNote)}
+                                onClick={() => handleConcludeNote(sentNote, recipient)}
                               >
                                 Concluir
                               </button>

@@ -75,12 +75,12 @@ Feche terminais antigos do projeto e rode o comando de iniciar o sistema novamen
 ## Funcionalidades
 
 * Login com usuário e senha
-* Cadastro de itens por qualquer usuário; edição e exclusão só por administradores
+* Cadastro e edição de itens por qualquer usuário; exclusão só por administradores
 * Controle de quantidade, patrimônio, natureza, localização e conservação
 * Transferência de material
 * Anotações privadas por usuário, com etiquetas, prazo opcional e número do SEI
-* Mural privado com anotações enviadas, recebidas e concluídas: quem recebe pode encaminhar a anotação a outro usuário, e o administrador conclui (ou reabre) a anotação depois que ela volta como "Pronto"
-* Calendário de prazos com número do SEI e assunto; anotações com prazo entram sozinhas no calendário de quem criou ou recebeu a anotação e saem quando são concluídas
+* Mural privado com anotações enviadas, recebidas e concluídas: quem recebe pode encaminhar a anotação, passando o processo adiante; quem enviou conclui (ou reabre) depois que ela volta como "Pronto"; administradores podem excluir as concluídas
+* Calendário de prazos com número do SEI e assunto; anotações com prazo entram sozinhas no calendário de quem está com o processo e saem quando são concluídas
 * Histórico individual por item
 * Auditoria administrativa
 

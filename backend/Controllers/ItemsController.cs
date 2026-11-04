@@ -280,7 +280,7 @@ public class ItemsController : AuthenticatedControllerBase
     [RequestSizeLimit(MaxItemRequestBodyBytes)]
     public async Task<IActionResult> Update(int id, [FromBody] ItemUpsertRequest request)
     {
-        var (ok, currentUser, error) = await TryGetAdminUserAsync();
+        var (ok, currentUser, error) = await TryGetCurrentUserAsync();
         if (!ok) return error!;
 
         var (normalizedItem, validationError) = await ValidateAndNormalizeItemAsync(request);

@@ -90,20 +90,24 @@ public class NotesController : AuthenticatedControllerBase
         if (note is null)
             return NotFound(new { message = "Anotação não encontrada." });
 
-        if (note.ConcludedAt is not null)
+        if (await IsClosedNoteAsync(note.Id))
             return Conflict(new { message = ConcludedNoteMessage });
 
         var (fields, validationError) = await ValidateNoteFieldsAsync(request, currentUser, note.Tags);
         if (validationError is not null)
             return BadRequest(new { message = validationError });
 
-        var currentRecipients = await Context.UserNoteRecipients
+        // The form lists only the author's direct recipients; forwarded deliveries and closed ones stay as they are.
+        var allRecipients = await Context.UserNoteRecipients
             .Where(x => x.NoteId == note.Id)
             .ToListAsync();
+        var currentRecipients = allRecipients.Where(x => x.ForwardedByUserId is null).ToList();
         var requestedIds = fields!.Recipients.Select(x => x.Id).ToHashSet();
-        var removedRecipients = currentRecipients.Where(x => !requestedIds.Contains(x.UserId)).ToList();
+        var removedRecipients = currentRecipients
+            .Where(x => !requestedIds.Contains(x.UserId) && IsOpenDelivery(x))
+            .ToList();
         var addedRecipients = fields.Recipients
-            .Where(x => currentRecipients.All(current => current.UserId != x.Id))
+            .Where(x => allRecipients.All(current => current.UserId != x.Id))
             .ToList();
         var contentChanged =
             !string.Equals(note.Title, fields.Title, StringComparison.Ordinal)
@@ -165,7 +169,7 @@ public class NotesController : AuthenticatedControllerBase
         if (note is null)
             return NotFound(new { message = "Anotação não encontrada." });
 
-        if (note.ConcludedAt is not null)
+        if (await IsClosedNoteAsync(note.Id))
             return Conflict(new { message = ConcludedNoteMessage });
 
         await using var transaction = await Context.Database.BeginTransactionAsync();

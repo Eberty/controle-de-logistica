@@ -179,9 +179,26 @@ public abstract class AuthenticatedControllerBase : ControllerBase
     }
 
     protected const string ConcludedNoteMessage =
-        "Anotação concluída não pode ser alterada. Um administrador pode reabri-la na aba Concluídos do Mural.";
+        "Anotação concluída não pode ser alterada. Ela pode ser reaberta na aba Concluídos do Mural.";
 
-    protected async Task<List<UserNoteDto>> MapNotesWithRecipientsAsync(IReadOnlyCollection<UserNote> notes)
+    // Each recipient row is a delivery: the sender is whoever forwarded it, or the note author. A delivery stays open
+    // until the recipient forwards it (hand-off) or the sender concludes it.
+    protected static bool IsOpenDelivery(UserNoteRecipient recipient) =>
+        recipient.ConcludedAt is null && recipient.ForwardedAt is null;
+
+    protected static int DeliverySenderId(UserNoteRecipient recipient, UserNote note) =>
+        recipient.ForwardedByUserId ?? note.UserId;
+
+    // A note is closed when it was sent and none of its deliveries is open anymore.
+    protected static bool IsClosedNote(IReadOnlyCollection<UserNoteRecipient> recipients) =>
+        recipients.Count > 0 && !recipients.Any(IsOpenDelivery);
+
+    protected async Task<bool> IsClosedNoteAsync(int noteId) =>
+        IsClosedNote(await Context.UserNoteRecipients.AsNoTracking().Where(x => x.NoteId == noteId).ToListAsync());
+
+    protected async Task<List<UserNoteDto>> MapNotesWithRecipientsAsync(
+        IReadOnlyCollection<UserNote> notes,
+        Func<UserNoteRecipient, UserNote, bool>? includeRecipient = null)
     {
         var noteIds = notes.Select(x => x.Id).ToList();
         var recipients = await Context.UserNoteRecipients
@@ -190,30 +207,36 @@ public abstract class AuthenticatedControllerBase : ControllerBase
             .ToListAsync();
         var names = await LoadUserNamesAsync(notes
             .Select(x => x.UserId)
-            .Concat(notes.Where(x => x.ConcludedByUserId is not null).Select(x => x.ConcludedByUserId!.Value))
             .Concat(recipients.Select(x => x.UserId))
-            .Concat(recipients.Where(x => x.ForwardedByUserId is not null).Select(x => x.ForwardedByUserId!.Value)));
+            .Concat(recipients.Where(x => x.ForwardedByUserId is not null).Select(x => x.ForwardedByUserId!.Value))
+            .Concat(recipients.Where(x => x.ConcludedByUserId is not null).Select(x => x.ConcludedByUserId!.Value)));
 
-        return notes.Select(note => new UserNoteDto(
-            note.Id,
-            note.Title,
-            note.Content,
-            note.Tags,
-            note.SeiNumber,
-            note.SeiProcessId,
-            note.DueDate,
-            note.UserId,
-            names.GetValueOrDefault(note.UserId, string.Empty),
-            note.CreatedAt,
-            note.UpdatedAt,
-            recipients
-                .Where(x => x.NoteId == note.Id)
-                .Select(x => ToRecipientDto(x, names))
-                .OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
-                .ToList(),
-            note.ConcludedAt,
-            note.ConcludedByUserId is null ? string.Empty : names.GetValueOrDefault(note.ConcludedByUserId.Value, string.Empty)))
-            .ToList();
+        return notes.Select(note =>
+        {
+            var noteRecipients = recipients.Where(x => x.NoteId == note.Id).ToList();
+            var lastConclusion = IsClosedNote(noteRecipients)
+                ? noteRecipients.Where(x => x.ConcludedAt is not null).MaxBy(x => x.ConcludedAt)
+                : null;
+            return new UserNoteDto(
+                note.Id,
+                note.Title,
+                note.Content,
+                note.Tags,
+                note.SeiNumber,
+                note.SeiProcessId,
+                note.DueDate,
+                note.UserId,
+                names.GetValueOrDefault(note.UserId, string.Empty),
+                note.CreatedAt,
+                note.UpdatedAt,
+                noteRecipients
+                    .Where(x => includeRecipient is null || includeRecipient(x, note))
+                    .Select(x => ToRecipientDto(x, names))
+                    .OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList(),
+                lastConclusion?.ConcludedAt,
+                lastConclusion?.ConcludedByUserId is int concludedBy ? names.GetValueOrDefault(concludedBy, string.Empty) : string.Empty);
+        }).ToList();
     }
 
     protected static NoteRecipientDto ToRecipientDto(UserNoteRecipient recipient, IReadOnlyDictionary<int, string> names) => new(
@@ -222,7 +245,10 @@ public abstract class AuthenticatedControllerBase : ControllerBase
         recipient.ReadAt,
         recipient.CompletedAt,
         recipient.CompletionSeenAt is not null,
-        recipient.ForwardedByUserId is null ? string.Empty : names.GetValueOrDefault(recipient.ForwardedByUserId.Value, string.Empty));
+        recipient.ForwardedByUserId,
+        recipient.ForwardedByUserId is null ? string.Empty : names.GetValueOrDefault(recipient.ForwardedByUserId.Value, string.Empty),
+        recipient.ConcludedAt,
+        recipient.ConcludedByUserId is null ? string.Empty : names.GetValueOrDefault(recipient.ConcludedByUserId.Value, string.Empty));
 
     protected async Task<Dictionary<int, string>> LoadUserNamesAsync(IEnumerable<int> userIds)
     {
@@ -233,12 +259,13 @@ public abstract class AuthenticatedControllerBase : ControllerBase
             .ToDictionaryAsync(x => x.Id, x => DisplayNameFrom(x.FullName, x.Username));
     }
 
-    // Keeps the calendar entry of an open note with a deadline in step with the note. CalendarController shows it
-    // only to the note author and recipients.
+    // Keeps the calendar entry of a note with a deadline in step with the note while it is private or has an open
+    // delivery. CalendarController shows it only to the users of the open deliveries, or to the author of a private note.
     protected async Task SyncNoteCalendarEntryAsync(UserNote note)
     {
         var entry = await Context.CalendarEntries.FirstOrDefaultAsync(x => x.NoteId == note.Id);
-        if (note.ConcludedAt is not null || string.IsNullOrEmpty(note.DueDate))
+        var recipients = await Context.UserNoteRecipients.AsNoTracking().Where(x => x.NoteId == note.Id).ToListAsync();
+        if (IsClosedNote(recipients) || string.IsNullOrEmpty(note.DueDate))
         {
             if (entry is not null)
             {
@@ -266,9 +293,7 @@ public abstract class AuthenticatedControllerBase : ControllerBase
         entry.SeiNumber = note.SeiNumber;
         entry.SeiProcessId = note.SeiProcessId;
         entry.Subject = note.Title;
-        entry.Notes = await Context.UserNoteRecipients.AnyAsync(x => x.NoteId == note.Id)
-            ? "Prazo de anotação enviada pelo Mural."
-            : "Prazo de anotação privada.";
+        entry.Notes = recipients.Count > 0 ? "Prazo de anotação enviada pelo Mural." : "Prazo de anotação privada.";
         entry.UpdatedAt = now;
         await Context.SaveChangesAsync();
     }

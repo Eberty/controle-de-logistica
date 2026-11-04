@@ -116,6 +116,9 @@ public static class DatabaseInitializer
             new("NoteId", "INTEGER NOT NULL", "integer NOT NULL"),
             new("UserId", "INTEGER NOT NULL", "integer NOT NULL"),
             new("ForwardedByUserId", "INTEGER NULL", "integer NULL"),
+            new("ForwardedAt", "TEXT NULL", "timestamp with time zone NULL"),
+            new("ConcludedAt", "TEXT NULL", "timestamp with time zone NULL"),
+            new("ConcludedByUserId", "INTEGER NULL", "integer NULL"),
             new("CreatedAt", "TEXT NOT NULL", "timestamp with time zone NOT NULL"),
             new("ReadAt", "TEXT NULL", "timestamp with time zone NULL"),
             new("CompletedAt", "TEXT NULL", "timestamp with time zone NULL"),
@@ -167,6 +170,40 @@ public static class DatabaseInitializer
         ON CONFLICT ("Name") DO NOTHING;
         """);
 
+    // Conclusion used to be stored on the note; it now belongs to each recipient, so old values move there.
+    private const string MoveNoteConclusionToRecipientsSql = """
+        UPDATE "UserNoteRecipients"
+        SET "ConcludedAt" = (SELECT n."ConcludedAt" FROM "UserNotes" n WHERE n."Id" = "UserNoteRecipients"."NoteId"),
+            "ConcludedByUserId" = (SELECT n."ConcludedByUserId" FROM "UserNotes" n WHERE n."Id" = "UserNoteRecipients"."NoteId")
+        WHERE "ConcludedAt" IS NULL
+          AND EXISTS (SELECT 1 FROM "UserNotes" n WHERE n."Id" = "UserNoteRecipients"."NoteId" AND n."ConcludedAt" IS NOT NULL);
+        """;
+
+    private const string ClearNoteConclusionSql = """
+        UPDATE "UserNotes"
+        SET "ConcludedAt" = NULL, "ConcludedByUserId" = NULL
+        WHERE "ConcludedAt" IS NOT NULL;
+        """;
+
+    // A recipient who forwarded a note hands it off; rows forwarded before that rule existed get the hand-off date.
+    private const string MarkForwardedRecipientsSql = """
+        UPDATE "UserNoteRecipients"
+        SET "ForwardedAt" = (
+            SELECT MIN(c."CreatedAt") FROM "UserNoteRecipients" c
+            WHERE c."NoteId" = "UserNoteRecipients"."NoteId" AND c."ForwardedByUserId" = "UserNoteRecipients"."UserId")
+        WHERE "ForwardedAt" IS NULL
+          AND EXISTS (
+            SELECT 1 FROM "UserNoteRecipients" c
+            WHERE c."NoteId" = "UserNoteRecipients"."NoteId" AND c."ForwardedByUserId" = "UserNoteRecipients"."UserId");
+        """;
+
+    private static readonly string[] DataMigrationsSql =
+    [
+        MoveNoteConclusionToRecipientsSql,
+        ClearNoteConclusionSql,
+        MarkForwardedRecipientsSql
+    ];
+
     private static readonly (string Table, string Column)[] EnsuredColumns =
     [
         ("Users", "FullName"),
@@ -190,6 +227,9 @@ public static class DatabaseInitializer
         ("UserNotes", "ConcludedAt"),
         ("UserNotes", "ConcludedByUserId"),
         ("UserNoteRecipients", "ForwardedByUserId"),
+        ("UserNoteRecipients", "ForwardedAt"),
+        ("UserNoteRecipients", "ConcludedAt"),
+        ("UserNoteRecipients", "ConcludedByUserId"),
         ("CalendarEntries", "NoteId")
     ];
 
@@ -260,6 +300,8 @@ public static class DatabaseInitializer
         await EnsureTablesAsync(context, DatabaseProvider.Sqlite);
         await EnsureColumnsAsync(context, DatabaseProvider.Sqlite);
         await ExecuteProviderSqlAsync(context, AppLocksSeedSql, DatabaseProvider.Sqlite);
+        foreach (var sql in DataMigrationsSql)
+            await context.Database.ExecuteSqlRawAsync(sql);
         await EnsureIndexesAsync(context, DatabaseProvider.Sqlite);
     }
 
@@ -268,6 +310,8 @@ public static class DatabaseInitializer
         await EnsureTablesAsync(context, DatabaseProvider.Postgres);
         await EnsureColumnsAsync(context, DatabaseProvider.Postgres);
         await ExecuteProviderSqlAsync(context, AppLocksSeedSql, DatabaseProvider.Postgres);
+        foreach (var sql in DataMigrationsSql)
+            await context.Database.ExecuteSqlRawAsync(sql);
         await EnsureIndexesAsync(context, DatabaseProvider.Postgres);
     }
 

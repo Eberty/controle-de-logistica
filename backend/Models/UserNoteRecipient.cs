@@ -6,6 +6,9 @@ public class UserNoteRecipient
     public int NoteId { get; set; }
     public int UserId { get; set; }
     public int? ForwardedByUserId { get; set; }
+    public DateTime? ForwardedAt { get; set; }
+    public DateTime? ConcludedAt { get; set; }
+    public int? ConcludedByUserId { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? ReadAt { get; set; }
     public DateTime? CompletedAt { get; set; }
