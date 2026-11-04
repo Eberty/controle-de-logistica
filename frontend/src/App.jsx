@@ -373,14 +373,13 @@ function App() {
   const [newLocationForm, setNewLocationForm] = useState(emptyLocationForm);
   const [itemForm, setItemForm] = useState(emptyItemForm);
   const [editingItemId, setEditingItemId] = useState(null);
-  const [itemEditReturnView, setItemEditReturnView] = useState(null);
   const [focusedItemId, setFocusedItemId] = useState(null);
   const [itemHistory, setItemHistory] = useState([]);
   const [transferForm, setTransferForm] = useState(emptyTransferForm);
   const [notes, setNotes] = useState([]);
   const [noteForm, setNoteForm] = useState(emptyNoteForm);
   const [editingNoteId, setEditingNoteId] = useState(null);
-  const [noteEditReturnView, setNoteEditReturnView] = useState(null);
+  const [noteEditForm, setNoteEditForm] = useState(emptyNoteForm);
   const [muralNotes, setMuralNotes] = useState(emptyMural);
   const [muralTab, setMuralTab] = useState(() => {
     try {
@@ -457,6 +456,8 @@ function App() {
   const adminSettingsRef = useRef(null);
   const itemPhotoObjectUrlsRef = useRef(new Map());
   const photoInputRef = useRef(null);
+  // Keeps the unsaved new-item form while an item is edited in the modal, which shares itemForm.
+  const itemDraftRef = useRef(null);
   const itemHistoryRequestRef = useRef(0);
   const auditTimelineRequestRef = useRef(0);
   const workspaceRequestRef = useRef(0);
@@ -1193,7 +1194,7 @@ function App() {
     setNotes([]);
     setNoteForm(emptyNoteForm);
     setEditingNoteId(null);
-    setNoteEditReturnView(null);
+    setNoteEditForm(emptyNoteForm);
     setMuralNotes(emptyMural);
     setMuralSummary(emptyMuralSummary);
     muralSummaryRef.current = emptyMuralSummary;
@@ -1207,7 +1208,7 @@ function App() {
     setCalendarEntries([]);
     resetCalendarUi();
     setEditingItemId(null);
-    setItemEditReturnView(null);
+    itemDraftRef.current = null;
     setFocusedItemId(null);
     setActiveView("items");
     setMobileMenuOpen(false);
@@ -1563,13 +1564,14 @@ function App() {
         setMessage("Item criado com sucesso.", "success");
       }
 
-      setItemForm(emptyItemForm);
-      setNewLocationForm(emptyLocationForm);
-      setEditingItemId(null);
-      setItemEditReturnView(null);
+      if (wasEditingItem) {
+        closeItemEdit();
+      } else {
+        setItemForm(emptyItemForm);
+        setNewLocationForm(emptyLocationForm);
+      }
       const freshItems = await refreshData();
       if (wasEditingItem) {
-        setActiveView("search");
         if (savedItem && Array.isArray(freshItems)) {
           const filtered = filterInventoryItems(freshItems, inventoryFilters, inventorySort);
           const itemIndex = filtered.findIndex((item) => item.id === savedItem.id);
@@ -1599,9 +1601,7 @@ function App() {
     try {
       await request(`/api/items/${itemId}`, { token, method: "DELETE" });
       if (editingItemId === itemId) {
-        setEditingItemId(null);
-        setItemEditReturnView(null);
-        setItemForm(emptyItemForm);
+        closeItemEdit();
       }
       if (focusedItemId === itemId) {
         setFocusedItemId(null);
@@ -1617,8 +1617,7 @@ function App() {
   }
 
   function handleEditItem(item) {
-    setItemEditReturnView(activeView);
-    setActiveView("items");
+    if (!editingItemId) itemDraftRef.current = itemForm;
     closeItemAction();
     setEditingItemId(item.id);
     setNewLocationForm(emptyLocationForm);
@@ -1675,11 +1674,11 @@ function App() {
     }));
   }
 
-  function handleCancelItemEdit() {
+  function closeItemEdit() {
     setEditingItemId(null);
-    setItemEditReturnView(null);
-    setItemForm(emptyItemForm);
-    setActiveView(itemEditReturnView ?? "search");
+    setItemForm(itemDraftRef.current ?? emptyItemForm);
+    itemDraftRef.current = null;
+    setNewLocationForm(emptyLocationForm);
   }
 
   async function handleTransfer(event) {
@@ -1970,8 +1969,8 @@ function App() {
     }
   }
 
-  function toggleNoteTag(tagName) {
-    setNoteForm((current) => {
+  function toggleNoteTag(setForm, tagName) {
+    setForm((current) => {
       const selected = current.tags.some((tag) => tagColorKey(tag) === tagColorKey(tagName));
       return {
         ...current,
@@ -1982,8 +1981,8 @@ function App() {
     });
   }
 
-  function toggleNoteRecipient(userId) {
-    setNoteForm((current) => ({
+  function toggleNoteRecipient(setForm, userId) {
+    setForm((current) => ({
       ...current,
       recipientUserIds: current.recipientUserIds.includes(userId)
         ? current.recipientUserIds.filter((id) => id !== userId)
@@ -2014,7 +2013,7 @@ function App() {
     }
   }
 
-  async function handleCreateNoteTag() {
+  async function handleCreateNoteTag(setForm) {
     const name = noteTagForm.name.trim();
     if (!name) {
       setMessage("Informe o nome da etiqueta.");
@@ -2033,7 +2032,7 @@ function App() {
       setNoteTags((current) =>
         [...current, createdTag].sort((first, second) => compareText(first.name, second.name)),
       );
-      setNoteForm((current) => ({ ...current, tags: [...current.tags, createdTag.name] }));
+      setForm((current) => ({ ...current, tags: [...current.tags, createdTag.name] }));
       setNoteTagForm(emptyNoteTagForm);
       setMessage("Etiqueta cadastrada.", "success");
     } catch (error) {
@@ -2046,35 +2045,45 @@ function App() {
     await loadInto("/api/calendar", setCalendarEntries, currentToken);
   }
 
+  function buildNotePayload(form) {
+    return {
+      title: form.title,
+      content: form.content,
+      tags: form.tags,
+      seiNumber: form.seiNumber,
+      seiLink: form.seiLink,
+      dueDate: form.hasDueDate ? form.dueDate : "",
+      recipientUserIds: form.recipientUserIds,
+    };
+  }
+
   async function handleSaveNote(event) {
     event.preventDefault();
     setBusy(true);
     setMessage("");
 
     try {
-      const payload = {
-        title: noteForm.title,
-        content: noteForm.content,
-        tags: noteForm.tags,
-        seiNumber: noteForm.seiNumber,
-        seiLink: noteForm.seiLink,
-        dueDate: noteForm.hasDueDate ? noteForm.dueDate : "",
-        recipientUserIds: noteForm.recipientUserIds,
-      };
-
-      await request(editingNoteId ? `/api/me/notes/${editingNoteId}` : "/api/me/notes", {
-        token,
-        method: editingNoteId ? "PUT" : "POST",
-        body: payload,
-      });
-      setMessage(editingNoteId ? "Anotação atualizada." : "Anotação criada.", "success");
+      await request("/api/me/notes", { token, method: "POST", body: buildNotePayload(noteForm) });
+      setMessage("Anotação criada.", "success");
       setNoteForm(emptyNoteForm);
       setNoteTagForm(emptyNoteTagForm);
-      setEditingNoteId(null);
-      if (editingNoteId && noteEditReturnView) {
-        setActiveView(noteEditReturnView);
-      }
-      setNoteEditReturnView(null);
+      await Promise.all([loadNotes(), loadMural(), loadCalendar()]);
+    } catch (error) {
+      handleRequestError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveNoteEdit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+
+    try {
+      await request(`/api/me/notes/${editingNoteId}`, { token, method: "PUT", body: buildNotePayload(noteEditForm) });
+      setMessage("Anotação atualizada.", "success");
+      closeNoteEdit();
       await Promise.all([loadNotes(), loadMural(), loadCalendar()]);
     } catch (error) {
       handleRequestError(error);
@@ -2085,8 +2094,8 @@ function App() {
 
   function handleEditNote(noteItem) {
     setEditingNoteId(noteItem.id);
-    setNoteEditReturnView(null);
-    setNoteForm({
+    setNoteTagForm(emptyNoteTagForm);
+    setNoteEditForm({
       title: noteItem.title ?? "",
       content: noteItem.content ?? "",
       tags: splitTags(noteItem.tags),
@@ -2096,6 +2105,12 @@ function App() {
       dueDate: noteItem.dueDate ?? "",
       recipientUserIds: (noteItem.recipients ?? []).map((recipient) => recipient.userId),
     });
+  }
+
+  function closeNoteEdit() {
+    setEditingNoteId(null);
+    setNoteEditForm(emptyNoteForm);
+    setNoteTagForm(emptyNoteTagForm);
   }
 
   async function handleEditMuralNote(muralNote) {
@@ -2118,9 +2133,7 @@ function App() {
       return;
     }
 
-    navigateTo("notes");
     handleEditNote(ownNote);
-    setNoteEditReturnView("mural");
   }
 
   async function handleDeleteNote(noteId) {
@@ -2138,9 +2151,7 @@ function App() {
     try {
       await request(`/api/me/notes/${noteId}`, { token, method: "DELETE" });
       if (editingNoteId === noteId) {
-        setEditingNoteId(null);
-        setNoteForm(emptyNoteForm);
-        setNoteEditReturnView(null);
+        closeNoteEdit();
       }
       setMessage("Anotação excluída.", "success");
       await Promise.all([loadNotes(), loadMural(), loadCalendar()]);
@@ -2438,6 +2449,456 @@ function App() {
   function closeConfirmDialog(confirmed) {
     confirmDialog?.resolve(confirmed);
     setConfirmDialog(null);
+  }
+
+  function renderItemForm() {
+    return (
+      <form className="form-grid" onSubmit={handleSaveItem}>
+        <label>
+          Nome do item
+          <input
+            value={itemForm.name}
+            onChange={(event) => setItemForm((current) => ({ ...current, name: event.target.value }))}
+            placeholder="Insira o nome do item"
+            maxLength={300}
+            required
+          />
+        </label>
+        <label>
+          Quantidade
+          <NumberInput
+            value={itemForm.quantity}
+            min={1}
+            onValueChange={(value) => setItemForm((current) => ({ ...current, quantity: value }))}
+            required
+          />
+        </label>
+        <label>
+          Natureza
+          <select
+            value={itemForm.nature}
+            onChange={(event) =>
+              setItemForm((current) => ({
+                ...current,
+                nature: event.target.value,
+                assetTag: event.target.value === permanentNature ? current.assetTag : "",
+              }))
+            }
+            required
+          >
+            <option value="">Selecione</option>
+            {itemNatureOptions.map((nature) => (
+              <option key={nature} value={nature}>
+                {nature}
+              </option>
+            ))}
+          </select>
+        </label>
+        {itemForm.nature === permanentNature ? (
+          <label>
+            Patrimônio
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={itemForm.assetTag}
+              onChange={(event) =>
+                setItemForm((current) => ({
+                  ...current,
+                  assetTag: event.target.value.replace(/\D/g, ""),
+                }))
+              }
+              placeholder="Informar apenas números"
+            />
+          </label>
+        ) : null}
+        <label>
+          Localização
+          <div className="location-select-row">
+            <select
+              value={itemForm.location}
+              onChange={(event) => setItemForm((current) => ({ ...current, location: event.target.value }))}
+              required
+            >
+              <option value="">Selecione</option>
+              {availableLocationOptions.map((location) => (
+                <option key={location} value={location}>
+                  {location}
+                </option>
+              ))}
+            </select>
+            {isAdmin ? (
+              <button
+                className="icon-button location-add-toggle"
+                type="button"
+                onClick={() =>
+                  setNewLocationForm((current) => ({
+                    ...current,
+                    open: !current.open,
+                    value: "",
+                    editValue: "",
+                    editName: "",
+                    renaming: false,
+                  }))
+                }
+                title={newLocationForm.open ? "Fechar gerenciamento de localizações" : "Adicionar localização"}
+                aria-label={newLocationForm.open ? "Fechar gerenciamento de localizações" : "Adicionar localização"}
+              >
+                <span>{newLocationForm.open ? "-" : "+"}</span>
+              </button>
+            ) : null}
+          </div>
+        </label>
+        <label>
+          Estado de conservação
+          <select
+            value={itemForm.condition}
+            onChange={(event) => setItemForm((current) => ({ ...current, condition: event.target.value }))}
+            required
+          >
+            <option value="">Selecione</option>
+            {itemConditionOptions.map((condition) => (
+              <option key={condition} value={condition}>
+                {condition}
+              </option>
+            ))}
+          </select>
+        </label>
+        {newLocationForm.open ? (
+          <div className="full-width location-add-row">
+            <div className="location-create-row">
+              <label>
+                Nova localização
+                <input
+                  value={newLocationForm.value}
+                  onChange={(event) =>
+                    setNewLocationForm((current) => ({ ...current, value: event.target.value }))
+                  }
+                  placeholder="Digite a nova localização"
+                />
+              </label>
+              <button
+                className="primary"
+                type="button"
+                onClick={handleAddLocation}
+                disabled={newLocationForm.saving}
+              >
+                Adicionar
+              </button>
+            </div>
+            {customLocations.length ? (
+              <div className={`location-manage-row${newLocationForm.renaming ? " is-renaming" : ""}`}>
+                <label>
+                  <span title="Localizações predefinidas não podem ser alteradas.">
+                    Editar localizações adicionadas
+                  </span>
+                  <select
+                    value={newLocationForm.editName}
+                    onChange={(event) =>
+                      setNewLocationForm((current) => ({
+                        ...current,
+                        editName: event.target.value,
+                        editValue: event.target.value,
+                        renaming: false,
+                      }))
+                    }
+                  >
+                    <option value="">Selecionar</option>
+                    {customLocationOptions.map((location) => (
+                      <option key={location} value={location}>
+                        {location}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {newLocationForm.renaming ? (
+                  <label>
+                    Novo nome
+                    <input
+                      value={newLocationForm.editValue}
+                      onChange={(event) =>
+                        setNewLocationForm((current) => ({ ...current, editValue: event.target.value }))
+                      }
+                      placeholder="Digite o novo nome"
+                    />
+                  </label>
+                ) : null}
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={handleRenameLocation}
+                  disabled={newLocationForm.editing || !newLocationForm.editName}
+                >
+                  {newLocationForm.renaming ? "Salvar" : "Renomear"}
+                </button>
+                <button
+                  className="ghost danger"
+                  type="button"
+                  onClick={handleRemoveLocation}
+                  disabled={newLocationForm.removing || !newLocationForm.editName}
+                >
+                  Excluir
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="full-width notes-photo-row">
+          <div className={`photo-field${itemForm.hasPhoto ? " has-photo" : ""}`}>
+            <span>Foto do item</span>
+            <label
+              className="photo-dropzone"
+              title="Arraste ou selecione uma foto para adicionar ou substituir"
+              onDrop={handleItemPhotoDrop}
+              onDragOver={(event) => event.preventDefault()}
+            >
+              {itemFormPhotoPreviewUrl ? (
+                <img className="item-photo-preview" src={itemFormPhotoPreviewUrl} alt="Prévia da foto do item" />
+              ) : itemForm.hasPhoto ? (
+                <span>Prévia da foto do item</span>
+              ) : (
+                <span>Arraste ou selecione</span>
+              )}
+              <input ref={photoInputRef} type="file" accept="image/*" onChange={handleItemPhotoChange} />
+            </label>
+            {itemForm.hasPhoto ? (
+              <button className="ghost photo-remove-button" type="button" onClick={handleRemoveItemPhoto}>
+                Remover foto
+              </button>
+            ) : null}
+          </div>
+          <label>
+            Observações
+            <textarea
+              className="item-notes-textarea"
+              rows="2"
+              value={itemForm.notes}
+              onChange={(event) => setItemForm((current) => ({ ...current, notes: event.target.value }))}
+              placeholder="Informações adicionais sobre o item"
+              maxLength={5000}
+            />
+          </label>
+        </div>
+        {editingItemId ? (
+          <label className="checkbox-field full-width">
+            <input
+              type="checkbox"
+              checked={itemForm.isDischarged}
+              onChange={(event) =>
+                setItemForm((current) => ({ ...current, isDischarged: event.target.checked }))
+              }
+            />
+            Item descargueado
+          </label>
+        ) : null}
+        <div className="button-row">
+          <button className="primary" type="submit" disabled={busy}>
+            {editingItemId ? "Salvar alterações" : "Cadastrar item"}
+          </button>
+          {editingItemId ? (
+            <button className="ghost" type="button" onClick={closeItemEdit}>
+              Cancelar
+            </button>
+          ) : null}
+        </div>
+      </form>
+    );
+  }
+
+  function renderNoteFields(form, setForm) {
+    return (
+      <>
+        <input
+          value={form.title}
+          maxLength={200}
+          onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+          placeholder="Título da anotação"
+          required
+        />
+        <textarea
+          rows="9"
+          value={form.content}
+          maxLength={10000}
+          onChange={(event) => setForm((current) => ({ ...current, content: event.target.value }))}
+          placeholder="Conteúdo da anotação..."
+          required
+        />
+        <input
+          value={form.seiNumber}
+          maxLength={100}
+          onChange={(event) => setForm((current) => ({ ...current, seiNumber: event.target.value }))}
+          placeholder="Número do processo ou ofício SEI (opcional)"
+        />
+        <div className="note-field">
+          <input
+            value={form.seiLink}
+            maxLength={2000}
+            onChange={(event) => setForm((current) => ({ ...current, seiLink: event.target.value }))}
+            placeholder="Link de acesso direto do processo no SEI (opcional)"
+            aria-label="Link de acesso direto do processo no SEI"
+          />
+          <small className="muted">
+            Com o link, o número do SEI abre o processo direto. Copie no SEI pelo botão "Link para acesso direto" ou o
+            endereço da página do processo.
+          </small>
+        </div>
+
+        <div className="note-field">
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              checked={form.hasDueDate}
+              onChange={(event) => setForm((current) => ({ ...current, hasDueDate: event.target.checked }))}
+            />
+            Definir prazo
+          </label>
+          {form.hasDueDate ? (
+            <input
+              type="date"
+              value={form.dueDate}
+              onChange={(event) => setForm((current) => ({ ...current, dueDate: event.target.value }))}
+              aria-label="Data do prazo"
+              required
+            />
+          ) : null}
+        </div>
+
+        <div className="note-field">
+          <span className="note-field-label">Etiquetas</span>
+          <div className="tag-picker">
+            {noteTags.length === 0 && form.tags.length === 0 ? (
+              <span className="muted">Nenhuma etiqueta cadastrada.</span>
+            ) : null}
+            {form.tags
+              .filter((tag) => !noteTags.some((option) => tagColorKey(option.name) === tagColorKey(tag)))
+              .map((tag) => (
+                <span key={tag} className="tag-option selected">
+                  <button type="button" className="tag-option-label" aria-pressed onClick={() => toggleNoteTag(setForm, tag)}>
+                    {tag}
+                  </button>
+                </span>
+              ))}
+            {noteTags.map((tag) => {
+              const selected = form.tags.some((current) => tagColorKey(current) === tagColorKey(tag.name));
+              return (
+                <span
+                  className={`tag-option${selected ? " selected" : ""}`}
+                  style={tagStyle(tag.color)}
+                  key={tag.id}
+                >
+                  <button
+                    type="button"
+                    className="tag-option-label"
+                    aria-pressed={selected}
+                    onClick={() => toggleNoteTag(setForm, tag.name)}
+                  >
+                    {tag.name}
+                  </button>
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      className="tag-remove-button"
+                      onClick={() => handleDeleteNoteTag(tag)}
+                      title={`Excluir a etiqueta ${tag.name}`}
+                      aria-label={`Excluir a etiqueta ${tag.name}`}
+                    >
+                      <Icon type="close" />
+                    </button>
+                  ) : null}
+                </span>
+              );
+            })}
+            {noteTagForm.open ? null : (
+              <button
+                type="button"
+                className="ghost tag-add-button"
+                onClick={() => setNoteTagForm((current) => ({ ...current, open: true }))}
+              >
+                + Nova etiqueta
+              </button>
+            )}
+          </div>
+          {noteTagForm.open ? (
+            <div className="tag-create-row">
+              <input
+                value={noteTagForm.name}
+                maxLength={50}
+                onChange={(event) => setNoteTagForm((current) => ({ ...current, name: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    handleCreateNoteTag(setForm);
+                  }
+                }}
+                placeholder="Nome da nova etiqueta"
+                aria-label="Nome da nova etiqueta"
+              />
+              <label className="tag-color-field" title="Cor da etiqueta">
+                <input
+                  type="color"
+                  value={noteTagForm.color}
+                  onChange={(event) => setNoteTagForm((current) => ({ ...current, color: event.target.value }))}
+                  aria-label="Cor da etiqueta"
+                />
+              </label>
+              {noteTagForm.name.trim() ? (
+                <span className="tag-preview" style={tagStyle(noteTagForm.color)}>
+                  {noteTagForm.name.trim()}
+                </span>
+              ) : null}
+              <button className="primary" type="button" disabled={noteTagForm.saving} onClick={() => handleCreateNoteTag(setForm)}>
+                Salvar etiqueta
+              </button>
+              <button className="ghost" type="button" onClick={() => setNoteTagForm(emptyNoteTagForm)}>
+                Cancelar
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="note-field">
+          <span className="note-field-label">Destinatários</span>
+          {noteRecipientOptions.length === 0 ? (
+            <span className="muted">Nenhum outro usuário cadastrado.</span>
+          ) : (
+            <div className="recipient-picker">
+              {noteRecipientOptions.map((option) => (
+                <label className="checkbox-field" key={option.id}>
+                  <input
+                    type="checkbox"
+                    checked={form.recipientUserIds.includes(option.id)}
+                    onChange={() => toggleNoteRecipient(setForm, option.id)}
+                  />
+                  {option.name}
+                </label>
+              ))}
+            </div>
+          )}
+          <small className="muted">
+            Sem destinatário, a anotação fica visível só para você. Com destinatários, ela aparece no Mural.
+          </small>
+        </div>
+      </>
+    );
+  }
+
+  function renderEditModal({ label, eyebrow, title, onClose, children }) {
+    return (
+      <div className="action-modal" role="dialog" aria-modal="true" aria-label={label} onMouseDown={onClose}>
+        <article className="panel section-card action-modal-card" onMouseDown={(event) => event.stopPropagation()}>
+          <button className="photo-viewer-close action-modal-close" type="button" onClick={onClose} aria-label="Fechar">
+            ×
+          </button>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">{eyebrow}</p>
+              <h2>{title}</h2>
+            </div>
+          </div>
+          {children}
+        </article>
+      </div>
+    );
   }
 
   function renderConfirmModal() {
@@ -3139,7 +3600,6 @@ function App() {
                   type="button"
                   onClick={() => {
                     setEditingItemId(null);
-                    setItemEditReturnView(null);
                     setItemForm(emptyItemForm);
                   }}
                 >
@@ -3149,259 +3609,7 @@ function App() {
             ) : null}
           </div>
 
-          <form className="form-grid" onSubmit={handleSaveItem}>
-            <label>
-              Nome do item
-              <input
-                value={itemForm.name}
-                onChange={(event) => setItemForm((current) => ({ ...current, name: event.target.value }))}
-                placeholder="Insira o nome do item"
-                maxLength={300}
-                required
-              />
-            </label>
-            <label>
-              Quantidade
-              <NumberInput
-                value={itemForm.quantity}
-                min={1}
-                onValueChange={(value) => setItemForm((current) => ({ ...current, quantity: value }))}
-                required
-              />
-            </label>
-            <label>
-              Natureza
-              <select
-                value={itemForm.nature}
-                onChange={(event) =>
-                  setItemForm((current) => ({
-                    ...current,
-                    nature: event.target.value,
-                    assetTag: event.target.value === permanentNature ? current.assetTag : "",
-                  }))
-                }
-                required
-              >
-                <option value="">Selecione</option>
-                {itemNatureOptions.map((nature) => (
-                  <option key={nature} value={nature}>
-                    {nature}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {itemForm.nature === permanentNature ? (
-              <label>
-                Patrimônio
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={itemForm.assetTag}
-                  onChange={(event) =>
-                    setItemForm((current) => ({
-                      ...current,
-                      assetTag: event.target.value.replace(/\D/g, ""),
-                    }))
-                  }
-                  placeholder="Informar apenas números"
-                />
-              </label>
-            ) : null}
-            <label>
-              Localização
-              <div className="location-select-row">
-                <select
-                  value={itemForm.location}
-                  onChange={(event) => setItemForm((current) => ({ ...current, location: event.target.value }))}
-                  required
-                >
-                  <option value="">Selecione</option>
-                  {availableLocationOptions.map((location) => (
-                    <option key={location} value={location}>
-                      {location}
-                    </option>
-                  ))}
-                </select>
-                {isAdmin ? (
-                  <button
-                    className="icon-button location-add-toggle"
-                    type="button"
-                    onClick={() =>
-                      setNewLocationForm((current) => ({
-                        ...current,
-                        open: !current.open,
-                        value: "",
-                        editValue: "",
-                        editName: "",
-                        renaming: false,
-                      }))
-                    }
-                    title={newLocationForm.open ? "Fechar gerenciamento de localizações" : "Adicionar localização"}
-                    aria-label={newLocationForm.open ? "Fechar gerenciamento de localizações" : "Adicionar localização"}
-                  >
-                    <span>{newLocationForm.open ? "-" : "+"}</span>
-                  </button>
-                ) : null}
-              </div>
-            </label>
-            <label>
-              Estado de conservação
-              <select
-                value={itemForm.condition}
-                onChange={(event) => setItemForm((current) => ({ ...current, condition: event.target.value }))}
-                required
-              >
-                <option value="">Selecione</option>
-                {itemConditionOptions.map((condition) => (
-                  <option key={condition} value={condition}>
-                    {condition}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {newLocationForm.open ? (
-              <div className="full-width location-add-row">
-                <div className="location-create-row">
-                  <label>
-                    Nova localização
-                    <input
-                      value={newLocationForm.value}
-                      onChange={(event) =>
-                        setNewLocationForm((current) => ({ ...current, value: event.target.value }))
-                      }
-                      placeholder="Digite a nova localização"
-                    />
-                  </label>
-                  <button
-                    className="primary"
-                    type="button"
-                    onClick={handleAddLocation}
-                    disabled={newLocationForm.saving}
-                  >
-                    Adicionar
-                  </button>
-                </div>
-                {customLocations.length ? (
-                  <div className={`location-manage-row${newLocationForm.renaming ? " is-renaming" : ""}`}>
-                    <label>
-                      <span title="Localizações predefinidas não podem ser alteradas.">
-                        Editar localizações adicionadas
-                      </span>
-                      <select
-                        value={newLocationForm.editName}
-                        onChange={(event) =>
-                          setNewLocationForm((current) => ({
-                            ...current,
-                            editName: event.target.value,
-                            editValue: event.target.value,
-                            renaming: false,
-                          }))
-                        }
-                      >
-                        <option value="">Selecionar</option>
-                        {customLocationOptions.map((location) => (
-                          <option key={location} value={location}>
-                            {location}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {newLocationForm.renaming ? (
-                      <label>
-                        Novo nome
-                        <input
-                          value={newLocationForm.editValue}
-                          onChange={(event) =>
-                            setNewLocationForm((current) => ({ ...current, editValue: event.target.value }))
-                          }
-                          placeholder="Digite o novo nome"
-                        />
-                      </label>
-                    ) : null}
-                    <button
-                      className="ghost"
-                      type="button"
-                      onClick={handleRenameLocation}
-                      disabled={newLocationForm.editing || !newLocationForm.editName}
-                    >
-                      {newLocationForm.renaming ? "Salvar" : "Renomear"}
-                    </button>
-                    <button
-                      className="ghost danger"
-                      type="button"
-                      onClick={handleRemoveLocation}
-                      disabled={newLocationForm.removing || !newLocationForm.editName}
-                    >
-                      Excluir
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            <div className="full-width notes-photo-row">
-              <div className={`photo-field${itemForm.hasPhoto ? " has-photo" : ""}`}>
-                <span>Foto do item</span>
-                <label
-                  className="photo-dropzone"
-                  title="Arraste ou selecione uma foto para adicionar ou substituir"
-                  onDrop={handleItemPhotoDrop}
-                  onDragOver={(event) => event.preventDefault()}
-                >
-                  {itemFormPhotoPreviewUrl ? (
-                    <img className="item-photo-preview" src={itemFormPhotoPreviewUrl} alt="Prévia da foto do item" />
-                  ) : itemForm.hasPhoto ? (
-                    <span>Prévia da foto do item</span>
-                  ) : (
-                    <span>Arraste ou selecione</span>
-                  )}
-                  <input ref={photoInputRef} type="file" accept="image/*" onChange={handleItemPhotoChange} />
-                </label>
-                {itemForm.hasPhoto ? (
-                  <button className="ghost photo-remove-button" type="button" onClick={handleRemoveItemPhoto}>
-                    Remover foto
-                  </button>
-                ) : null}
-              </div>
-              <label>
-                Observações
-                <textarea
-                  className="item-notes-textarea"
-                  rows="2"
-                  value={itemForm.notes}
-                  onChange={(event) => setItemForm((current) => ({ ...current, notes: event.target.value }))}
-                  placeholder="Informações adicionais sobre o item"
-                  maxLength={5000}
-                />
-              </label>
-            </div>
-            {editingItemId ? (
-              <label className="checkbox-field full-width">
-                <input
-                  type="checkbox"
-                  checked={itemForm.isDischarged}
-                  onChange={(event) =>
-                    setItemForm((current) => ({ ...current, isDischarged: event.target.checked }))
-                  }
-                />
-                Item descargueado
-              </label>
-            ) : null}
-            <div className="button-row">
-              <button className="primary" type="submit" disabled={busy}>
-                {editingItemId ? "Salvar alterações" : "Cadastrar item"}
-              </button>
-              {editingItemId ? (
-                <button
-                  className="ghost"
-                  type="button"
-                  onClick={handleCancelItemEdit}
-                >
-                  Cancelar edição
-                </button>
-              ) : null}
-            </div>
-          </form>
+          {renderItemForm()}
           </article>
         ) : null}
 
@@ -3746,198 +3954,12 @@ function App() {
           </div>
 
           <form className="stacked" onSubmit={handleSaveNote}>
-            <input
-              value={noteForm.title}
-              maxLength={200}
-              onChange={(event) => setNoteForm((current) => ({ ...current, title: event.target.value }))}
-              placeholder="Título da anotação"
-              required
-            />
-            <textarea
-              rows="9"
-              value={noteForm.content}
-              maxLength={10000}
-              onChange={(event) => setNoteForm((current) => ({ ...current, content: event.target.value }))}
-              placeholder="Conteúdo da anotação..."
-              required
-            />
-            <input
-              value={noteForm.seiNumber}
-              maxLength={100}
-              onChange={(event) => setNoteForm((current) => ({ ...current, seiNumber: event.target.value }))}
-              placeholder="Número do processo ou ofício SEI (opcional)"
-            />
-            <div className="note-field">
-              <input
-                value={noteForm.seiLink}
-                maxLength={2000}
-                onChange={(event) => setNoteForm((current) => ({ ...current, seiLink: event.target.value }))}
-                placeholder="Link de acesso direto do processo no SEI (opcional)"
-                aria-label="Link de acesso direto do processo no SEI"
-              />
-              <small className="muted">
-                Com o link, o número do SEI abre o processo direto. Copie no SEI pelo botão "Link para acesso direto" ou o
-                endereço da página do processo.
-              </small>
-            </div>
-
-            <div className="note-field">
-              <label className="checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={noteForm.hasDueDate}
-                  onChange={(event) => setNoteForm((current) => ({ ...current, hasDueDate: event.target.checked }))}
-                />
-                Definir prazo
-              </label>
-              {noteForm.hasDueDate ? (
-                <input
-                  type="date"
-                  value={noteForm.dueDate}
-                  onChange={(event) => setNoteForm((current) => ({ ...current, dueDate: event.target.value }))}
-                  aria-label="Data do prazo"
-                  required
-                />
-              ) : null}
-            </div>
-
-            <div className="note-field">
-              <span className="note-field-label">Etiquetas</span>
-              <div className="tag-picker">
-                {noteTags.length === 0 && noteForm.tags.length === 0 ? (
-                  <span className="muted">Nenhuma etiqueta cadastrada.</span>
-                ) : null}
-                {noteForm.tags
-                  .filter((tag) => !noteTags.some((option) => tagColorKey(option.name) === tagColorKey(tag)))
-                  .map((tag) => (
-                    <span key={tag} className="tag-option selected">
-                      <button type="button" className="tag-option-label" aria-pressed onClick={() => toggleNoteTag(tag)}>
-                        {tag}
-                      </button>
-                    </span>
-                  ))}
-                {noteTags.map((tag) => {
-                  const selected = noteForm.tags.some((current) => tagColorKey(current) === tagColorKey(tag.name));
-                  return (
-                    <span
-                      className={`tag-option${selected ? " selected" : ""}`}
-                      style={tagStyle(tag.color)}
-                      key={tag.id}
-                    >
-                      <button
-                        type="button"
-                        className="tag-option-label"
-                        aria-pressed={selected}
-                        onClick={() => toggleNoteTag(tag.name)}
-                      >
-                        {tag.name}
-                      </button>
-                      {isAdmin ? (
-                        <button
-                          type="button"
-                          className="tag-remove-button"
-                          onClick={() => handleDeleteNoteTag(tag)}
-                          title={`Excluir a etiqueta ${tag.name}`}
-                          aria-label={`Excluir a etiqueta ${tag.name}`}
-                        >
-                          <Icon type="close" />
-                        </button>
-                      ) : null}
-                    </span>
-                  );
-                })}
-                {noteTagForm.open ? null : (
-                  <button
-                    type="button"
-                    className="ghost tag-add-button"
-                    onClick={() => setNoteTagForm((current) => ({ ...current, open: true }))}
-                  >
-                    + Nova etiqueta
-                  </button>
-                )}
-              </div>
-              {noteTagForm.open ? (
-                <div className="tag-create-row">
-                  <input
-                    value={noteTagForm.name}
-                    maxLength={50}
-                    onChange={(event) => setNoteTagForm((current) => ({ ...current, name: event.target.value }))}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        handleCreateNoteTag();
-                      }
-                    }}
-                    placeholder="Nome da nova etiqueta"
-                    aria-label="Nome da nova etiqueta"
-                  />
-                  <label className="tag-color-field" title="Cor da etiqueta">
-                    <input
-                      type="color"
-                      value={noteTagForm.color}
-                      onChange={(event) => setNoteTagForm((current) => ({ ...current, color: event.target.value }))}
-                      aria-label="Cor da etiqueta"
-                    />
-                  </label>
-                  {noteTagForm.name.trim() ? (
-                    <span className="tag-preview" style={tagStyle(noteTagForm.color)}>
-                      {noteTagForm.name.trim()}
-                    </span>
-                  ) : null}
-                  <button className="primary" type="button" disabled={noteTagForm.saving} onClick={handleCreateNoteTag}>
-                    Salvar etiqueta
-                  </button>
-                  <button className="ghost" type="button" onClick={() => setNoteTagForm(emptyNoteTagForm)}>
-                    Cancelar
-                  </button>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="note-field">
-              <span className="note-field-label">Destinatários</span>
-              {noteRecipientOptions.length === 0 ? (
-                <span className="muted">Nenhum outro usuário cadastrado.</span>
-              ) : (
-                <div className="recipient-picker">
-                  {noteRecipientOptions.map((option) => (
-                    <label className="checkbox-field" key={option.id}>
-                      <input
-                        type="checkbox"
-                        checked={noteForm.recipientUserIds.includes(option.id)}
-                        onChange={() => toggleNoteRecipient(option.id)}
-                      />
-                      {option.name}
-                    </label>
-                  ))}
-                </div>
-              )}
-              <small className="muted">
-                Sem destinatário, a anotação fica visível só para você. Com destinatários, ela aparece no Mural.
-              </small>
-            </div>
+            {renderNoteFields(noteForm, setNoteForm)}
 
             <div className="button-row">
               <button className="primary" type="submit" disabled={busy}>
-                {editingNoteId ? "Salvar anotação" : "Adicionar anotação"}
+                Adicionar anotação
               </button>
-              {editingNoteId ? (
-                <button
-                  className="ghost"
-                  type="button"
-                  onClick={() => {
-                    setEditingNoteId(null);
-                    setNoteForm(emptyNoteForm);
-                    setNoteTagForm(emptyNoteTagForm);
-                    if (noteEditReturnView) {
-                      setActiveView(noteEditReturnView);
-                    }
-                    setNoteEditReturnView(null);
-                  }}
-                >
-                  Cancelar edição
-                </button>
-              ) : null}
             </div>
           </form>
 
@@ -4388,9 +4410,6 @@ function App() {
                   onClick={() => loadCalendar().catch((error) => handleRequestError(error))}
                 >
                   <Icon type="refresh" />
-                </button>
-                <button className="primary" type="button" onClick={() => openCalendarCreate()}>
-                  Adicionar anotação
                 </button>
               </div>
             </div>
@@ -5061,6 +5080,37 @@ function App() {
           </article>
         </div>
       ) : null}
+      {editingNoteId
+        ? renderEditModal({
+            label: "Editar anotação",
+            eyebrow: "Anotações",
+            title: "Editar anotação",
+            onClose: closeNoteEdit,
+            children: (
+              <form className="stacked" onSubmit={handleSaveNoteEdit}>
+                {renderNoteFields(noteEditForm, setNoteEditForm)}
+
+                <div className="button-row">
+                  <button className="primary" type="submit" disabled={busy}>
+                    Salvar anotação
+                  </button>
+                  <button className="ghost" type="button" onClick={closeNoteEdit}>
+                    Cancelar
+                  </button>
+                </div>
+              </form>
+            ),
+          })
+        : null}
+      {editingItemId
+        ? renderEditModal({
+            label: "Editar item",
+            eyebrow: "Inventário",
+            title: "Editar item",
+            onClose: closeItemEdit,
+            children: renderItemForm(),
+          })
+        : null}
       {renderConfirmModal()}
       {calendarFormOpen ? (
         <div
